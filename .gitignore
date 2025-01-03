@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Project specific
+WavTokenizer/
+Model/visualization_results/
+Model/embeddings/
+*.hdf5
+*.h5
+*.keras
+*.json
+*.npy
+*.npz
+*.pkl
+*.log
+*.png
+*.wav
+*.pdf
+*.v2
+*.pt
+*_info
+
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# 保留的文件（不忽略）
+!requirements.txt
+!README.md
+!Model/experiments/*/config*.yaml
+!Model/experiments/*/README.md 

@@ -1,0 +1,11 @@
+input_height: 128
+input_width: 128
+input_channels: 1
+filters: [32, 64, 128, 256, 512]
+kernel_sizes: [[3, 3], [3, 3], [3, 3], [3, 3], [3, 3]]
+dilation_rates: [[1, 1], [1, 1], [1, 1], [1, 1], [1, 1]]
+dropout_rate: 0.3
+embedding_size: 128
+learning_rate: 0.001
+margin: 0.5
+save_dir: "/content/drive/MyDrive/MicforDysphagia/saved_models" 

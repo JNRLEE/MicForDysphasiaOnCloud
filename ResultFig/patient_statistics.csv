@@ -1,0 +1,6 @@
+Action Type,Patient (EAT-10 >= 3),Patient (EAT-10 < 3),Normal
+NoMovement,17,7,0
+DrySwallow,43,21,0
+Cracker,25,14,0
+Jelly,15,7,0
+WaterDrinking,30,15,0

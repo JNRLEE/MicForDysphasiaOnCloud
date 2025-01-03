@@ -1,0 +1,80 @@
+# 重要設定說明：
+# 1. 當前設定為簡化debug模式，使用2種動作類型，每種動作分為正常(P)和異常(N)：
+#    - NoMovement (無動作)
+#      * 無動作-正常 (P)
+#      * 無動作-異常 (N)
+#    - DrySwallow (乾吞嚥)
+#      * 乾吞嚥-正常 (P)
+#      * 乾吞嚥-異常 (N)
+# 
+# 2. 後續擴展計劃：
+#    階段1: 先擴展到3種動作類型（每種都分P/N）
+#      - NoMovement (無動作-P/N)
+#      - DrySwallow (乾吞嚥-P/N)
+#      - WaterDrinking (喝水-P/N)
+#    階段2: 最終擴展到5種動作類型（每種都分P/N）
+#      - NoMovement (無動作-P/N)
+#      - DrySwallow (乾吞嚥-P/N)
+#      - Cracker (餅乾-P/N)
+#      - Jelly (果凍-P/N)
+#      - WaterDrinking (喝水-P/N)
+#
+# 3. selection_types 中文對照表：
+#    無動作/無吞嚥 -> NoMovement (包含P/N兩種狀態)
+#    乾吞嚥相關 -> DrySwallow (包含P/N兩種狀態)
+#    餅乾相關 -> Cracker (包含P/N兩種狀態)
+#    果凍相關 -> Jelly (包含P/N兩種狀態)
+#    喝水相關 -> WaterDrinking (包含P/N兩種狀態)
+#
+# 4. 其他重要參數設定：
+#    - batch_size: 16 (可根據記憶體使用情況調整)
+#    - min_samples_per_class: 3 (確保每個P/N類別至少有3個樣本)
+#    - score_threshold: 3 (數據篩選分數閾值，用於區分P/N)
+#
+# Triplet Loss實驗配置
+
+# 音頻處理配置
+audio:
+  sr: 16000
+  frame_size: 256
+  overlap: 128
+  fft_size: 256
+  seq_num: 129
+  batch_proc_size: 10
+
+# 模型配置
+model:
+  num_classes: 2
+  dropout_rate: 0.5
+  learning_rate: 0.0001
+  feature_scale: 4
+  
+  # Triplet Loss 特定參數
+  embedding_dim: 64
+  margin: 0.5
+  mining_strategy: "semi-hard"
+  filters: [32, 64, 96]
+  kernel_sizes: [[5, 5], [3, 3], [3, 3]]
+  dilation_rates: [1, 2, 2]
+
+# 訓練配置
+training:
+  epochs: 50
+  batch_size: 16
+  early_stopping_patience: 5
+  outside_test_ratio: 0.2
+  validation_ratio: 0.2
+  model_save_path: "trained_triplet_model.keras"
+  min_samples_per_class: 3
+
+# 數據集配置
+dataset:
+  base_paths:
+    - WavData/ProcessedData
+  action_types:
+    - NoMovement
+    - DrySwallow
+  selection_types:
+    NoMovement: ['無動作', '無吞嚥']
+    DrySwallow: ['乾吞嚥1口', '乾吞嚥2口', '乾吞嚥3口', '乾吞嚥']
+  score_threshold: 3 
