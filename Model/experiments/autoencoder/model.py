@@ -11,36 +11,39 @@ import tensorflow as tf
 from tensorflow.keras.layers import *
 from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
+from tensorflow.keras import backend as K
 from typing import List, Dict, Optional, Tuple
-from Model.base.config import ModelConfig
+
+def build_model(config: Dict) -> Tuple[Model, Model, Model]:
+    """構建自編碼器模型
+    
+    Args:
+        config: 配置字典，包含模型參數
+        
+    Returns:
+        Tuple[Model, Model, Model]: (自編碼器, 編碼器, 解碼器)
+    """
+    autoencoder = AutoencoderModel(config.get('model', {}))
+    autoencoder.build()
+    return autoencoder.model, autoencoder.encoder, None  # 目前不需要單獨的解碼器
 
 class AutoencoderModel:
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: Dict):
         """初始化自編碼器模型
         
         Args:
-            config: ModelConfig 對象，包含模型配置
+            config: 配置字典，包含模型參數
         """
-        self.config = config
-        self._validate_config()
+        self.input_shape = config.get('input_shape', 674816)  # 默認輸入形狀
+        self.latent_dim = config.get('latent_dim', 128)  # 潛在空間維度
+        self.filters = config.get('filters', [64, 32, 16])  # 卷積層過濾器數量
+        self.kernel_sizes = config.get('kernel_sizes', [(3, 3), (3, 3), (3, 3)])  # 卷積核大小
+        self.dilation_rates = config.get('dilation_rates', [1, 2, 4])  # 擴張率
+        self.learning_rate = config.get('learning_rate', 1e-4)  # 學習率
         
-        # 設置模型參數
-        self.input_shape = config.input_shape
-        self.latent_dim = config.latent_dim
-        self.filters = config.filters
-        self.kernel_sizes = config.kernel_sizes
-        self.dilation_rates = config.dilation_rates
-        self.use_skip_connections = config.use_skip_connections
-        
-        # 計算和驗證網絡深度
-        self.network_depth = len(self.filters)
-        min_dimension = min(self.input_shape[0], self.input_shape[1])
-        max_depth = int(np.log2(min_dimension))
-        if self.network_depth > max_depth:
-            raise ValueError(
-                f"網絡深度 ({self.network_depth}) 太大，"
-                f"對於輸入大小 {self.input_shape}，最大允許深度為 {max_depth}"
-            )
+        # 確保模型參數列表長度一致
+        assert len(self.filters) == len(self.kernel_sizes) == len(self.dilation_rates), \
+            "filters、kernel_sizes和dilation_rates的長度必須相同"
         
         # 初始化模型
         self.model = None
@@ -50,175 +53,189 @@ class AutoencoderModel:
     def _validate_config(self):
         """驗證配置參數的完整性和有效性"""
         # 檢查必要參數
-        if self.config.latent_dim is None:
-            raise ValueError("必須指定 latent_dim")
-        if self.config.filters is None:
-            raise ValueError("必須指定 filters")
-        if self.config.kernel_sizes is None:
-            raise ValueError("必須指定 kernel_sizes")
-        if self.config.dilation_rates is None:
-            raise ValueError("必須指定 dilation_rates")
-            
+        required_params = {
+            'latent_dim': 128,
+            'filters': [32, 64, 96, 128],
+            'kernel_sizes': [[3, 3]] * 4,
+            'dilation_rates': [1, 2, 2, 4]
+        }
+        
+        # 為缺失的參數設置默認值
+        for param, default_value in required_params.items():
+            if param not in self.config:
+                self.config[param] = default_value
+                
         # 檢查參數的一致性
-        if len(self.config.filters) != len(self.config.kernel_sizes):
+        if len(self.config['filters']) != len(self.config['kernel_sizes']):
             raise ValueError(
-                f"filters ({len(self.config.filters)}) 和 "
-                f"kernel_sizes ({len(self.config.kernel_sizes)}) 的長度必須相同"
+                f"filters ({len(self.config['filters'])}) 和 "
+                f"kernel_sizes ({len(self.config['kernel_sizes'])}) 的長度必須相同"
             )
-        if len(self.config.filters) != len(self.config.dilation_rates):
+        if len(self.config['filters']) != len(self.config['dilation_rates']):
             raise ValueError(
-                f"filters ({len(self.config.filters)}) 和 "
-                f"dilation_rates ({len(self.config.dilation_rates)}) 的長度必須相同"
+                f"filters ({len(self.config['filters'])}) 和 "
+                f"dilation_rates ({len(self.config['dilation_rates'])}) 的長度必須相同"
             )
             
         # 檢查參數的有效性
-        if self.config.latent_dim <= 0:
-            raise ValueError(f"latent_dim ({self.config.latent_dim}) 必須大於0")
-        if not all(f > 0 for f in self.config.filters):
+        if self.config['latent_dim'] <= 0:
+            raise ValueError(f"latent_dim ({self.config['latent_dim']}) 必須大於0")
+        if not all(f > 0 for f in self.config['filters']):
             raise ValueError("所有的 filters 值必須大於0")
-        if not all(all(k > 0 for k in ks) for ks in self.config.kernel_sizes):
+        if not all(all(k > 0 for k in ks) for ks in self.config['kernel_sizes']):
             raise ValueError("所有的 kernel_size 值必須大於0")
-        if not all(d > 0 for d in self.config.dilation_rates):
+        if not all(d > 0 for d in self.config['dilation_rates']):
             raise ValueError("所有的 dilation_rate 值必須大於0")
     
     def _build_encoder_block(
         self,
-        inputs: tf.Tensor,
-        filters: int,
-        kernel_size: Tuple[int, int],
-        dilation_rate: int,
-        name: str
-    ) -> Tuple[tf.Tensor, tf.Tensor]:
-        """構建編碼器塊"""
-        x = Conv2D(
+        x,
+        filters,
+        kernel_size,
+        dilation_rate,
+        name_prefix
+    ):
+        """建構編碼器塊
+        
+        包含卷積、批量歸一化和池化操作
+        """
+        # 卷積層
+        x = Conv1D(
             filters=filters,
             kernel_size=kernel_size,
-            padding='same',
             dilation_rate=dilation_rate,
-            name=f'{name}_conv'
-        )(inputs)
-        x = BatchNormalization(name=f'{name}_bn')(x)
-        x = Activation('relu', name=f'{name}_relu')(x)
-        
-        # 使用same padding確保輸出大小是輸入的一半
-        pool = MaxPooling2D(pool_size=(2, 2), padding='same', name=f'{name}_pool')(x)
-        
-        return pool, x
-    
-    def _build_decoder_block(
-        self,
-        inputs: tf.Tensor,
-        skip_connection: Optional[tf.Tensor],
-        filters: int,
-        kernel_size: Tuple[int, int],
-        name: str
-    ) -> tf.Tensor:
-        """構建解碼器塊"""
-        # 使用same padding進行上採樣
-        x = UpSampling2D(size=(2, 2), name=f'{name}_upsample')(inputs)
-        
-        # 確保上採樣後的特徵圖與跳躍連接的大小匹配
-        if skip_connection is not None:
-            target_shape = tf.shape(skip_connection)[1:3]
-            x = tf.image.resize(x, target_shape, method='nearest')
-            x = Concatenate(name=f'{name}_concat')([x, skip_connection])
-        
-        x = Conv2D(
-            filters=filters,
-            kernel_size=kernel_size,
             padding='same',
-            name=f'{name}_conv'
+            name=f'{name_prefix}_conv1'
         )(x)
-        x = BatchNormalization(name=f'{name}_bn')(x)
-        x = Activation('relu', name=f'{name}_relu')(x)
+        x = BatchNormalization(name=f'{name_prefix}_bn1')(x)
+        x = Activation('relu', name=f'{name_prefix}_relu1')(x)
+        
+        # 池化層
+        x = MaxPooling1D(pool_size=2, name=f'{name_prefix}_pool1')(x)
         
         return x
     
-    def _build_encoder(self, inputs: tf.Tensor) -> Tuple[tf.Tensor, List[tf.Tensor]]:
-        """構建編碼器"""
-        skip_connections = []
-        x = inputs
-        
-        # 編碼器層
-        for i, (f, k, d) in enumerate(zip(self.filters, self.kernel_sizes, self.dilation_rates)):
-            x, skip = self._build_encoder_block(
-                x, f, k, d,
-                name=f'encoder_{i}'
-            )
-            skip_connections.append(skip)
-        
-        # 計算最後一層的特徵圖大小
-        # 假設每層下採樣2倍，計算最終特徵圖大小
-        h = self.input_shape[0] // (2 ** len(self.filters))
-        w = self.input_shape[1] // (2 ** len(self.filters))
-        c = self.filters[-1]
-        shape_before_flatten = (h, w, c)
-        
-        # 壓縮到潛在空間
-        x = Flatten(name='flatten')(x)
-        x = Dense(self.latent_dim, name='latent_dense')(x)
-        
-        return x, skip_connections, shape_before_flatten
-    
-    def _build_decoder(
+    def _build_decoder_block(
         self,
-        latent: tf.Tensor,
-        skip_connections: List[tf.Tensor],
-        shape_before_flatten: Tuple[int, int, int]
-    ) -> tf.Tensor:
-        """構建解碼器"""
-        # 從潛在空間恢復
-        h, w, c = shape_before_flatten
-        units = h * w * c
-        x = Dense(units, name='decoder_dense')(latent)
+        x,
+        filters,
+        kernel_size,
+        dilation_rate,
+        name_prefix
+    ):
+        """建構解碼器塊
         
-        # 重塑張量
-        x = Reshape(shape_before_flatten, name='decoder_reshape')(x)
+        包含上採樣、卷積和批量歸一化操作
+        """
+        # 上採樣
+        x = UpSampling1D(size=2, name=f'{name_prefix}_upsample')(x)
         
-        # 解碼器層
-        for i, (f, k, skip) in enumerate(zip(
-            reversed(self.filters),
-            reversed(self.kernel_sizes),
-            reversed(skip_connections) if self.use_skip_connections else [None] * len(self.filters)
-        )):
-            x = self._build_decoder_block(
-                x,
-                skip if self.use_skip_connections else None,
-                f, k,
-                name=f'decoder_{i}'
-            )
-        
-        # 最終輸出層
-        outputs = Conv2D(
-            filters=1,
-            kernel_size=(1, 1),
+        # 卷積層
+        x = Conv1D(
+            filters=filters,
+            kernel_size=kernel_size,
+            dilation_rate=dilation_rate,
             padding='same',
-            activation='sigmoid',
-            name='decoder_output'
+            name=f'{name_prefix}_conv1'
         )(x)
+        x = BatchNormalization(name=f'{name_prefix}_bn1')(x)
+        x = Activation('relu', name=f'{name_prefix}_relu1')(x)
         
-        return outputs
+        return x
     
-    def build(self) -> None:
-        """構建完整的自編碼器模型"""
-        inputs = Input(shape=self.input_shape, name='encoder_input')
+    def _build_encoder(self, inputs):
+        """建構編碼器
         
-        # 編碼器
-        latent, skip_connections, shape_before_flatten = self._build_encoder(inputs)
+        將輸入轉換為潛在空間的表示
+        """
+        x = inputs
+        skip_connections = []
         
-        # 解碼器
-        reconstructed = self._build_decoder(latent, skip_connections, shape_before_flatten)
+        # 編碼器塊
+        for i, (filters, kernel_size, dilation_rate) in enumerate(
+            zip(self.filters, self.kernel_sizes, self.dilation_rates)
+        ):
+            x = self._build_encoder_block(
+                x,
+                filters,
+                kernel_size,
+                dilation_rate,
+                f'encoder_block_{i}'
+            )
+            skip_connections.append(x)
+        
+        # 記錄展平前的形狀
+        shape_before_flatten = K.int_shape(x)
+        
+        # 展平並降維到潛在空間
+        x = Flatten()(x)
+        latent = Dense(self.latent_dim, name='encoder_dense')(x)
+        
+        return latent, skip_connections, shape_before_flatten
+    
+    def _build_decoder(self, latent, skip_connections, shape_before_flatten):
+        """建立解碼器部分"""
+        # 從潛在空間重建
+        x = Dense(shape_before_flatten[1] * shape_before_flatten[2], activation='relu')(latent)
+        x = Reshape((shape_before_flatten[1], shape_before_flatten[2]))(x)
+
+        # 反向應用卷積層
+        for i, (filters, kernel_size, dilation_rate) in enumerate(zip(
+            reversed(self.filters[:-1]),  # 不包括最後一層
+            reversed(self.kernel_sizes[:-1]),
+            reversed(self.dilation_rates[:-1])
+        )):
+            # 上採樣
+            x = UpSampling1D(2)(x)
+            
+            # 確保跳躍連接的形狀匹配
+            skip = skip_connections[-(i+1)]
+            if K.int_shape(x)[1] != K.int_shape(skip)[1]:
+                # 如果形狀不匹配，調整skip connection的大小
+                target_shape = K.int_shape(x)[1]
+                skip = Lambda(lambda x: x[:, :target_shape, :])(skip)
+            
+            # 添加跳躍連接
+            x = Add(name=f'skip_connection_{i}')([x, skip])
+            
+            # 卷積層
+            x = Conv1D(filters, kernel_size, padding='same', dilation_rate=dilation_rate)(x)
+            x = BatchNormalization()(x)
+            x = Activation('relu')(x)
+
+        # 最後一層使用單一通道的卷積來重建輸入
+        decoded = Conv1D(1, self.kernel_sizes[-1], padding='same', dilation_rate=self.dilation_rates[-1])(x)
+        
+        return decoded
+    
+    def build(self):
+        """建構自動編碼器模型
+        
+        包含編碼器和解碼器兩個主要部分
+        """
+        # 定義輸入層
+        inputs = Input(shape=(self.input_shape,), name='encoder_input')
+        
+        # 重塑輸入以適應1D卷積
+        reshaped_inputs = Reshape((self.input_shape, 1), name='reshape_input')(inputs)
+        
+        # 構建編碼器
+        latent, skip_connections, shape_before_flatten = self._build_encoder(reshaped_inputs)
+        
+        # 構建解碼器
+        decoded = self._build_decoder(latent, skip_connections, shape_before_flatten)
         
         # 創建模型
-        self.model = Model(inputs=inputs, outputs=reconstructed, name='autoencoder')
-        self.encoder = Model(inputs=inputs, outputs=latent, name='encoder')
+        self.model = Model(inputs=inputs, outputs=decoded, name='autoencoder')
         
         # 編譯模型
         self.model.compile(
-            optimizer=Adam(learning_rate=1e-4),
-            loss='mse',
-            metrics=['mae']
+            optimizer=Adam(learning_rate=self.learning_rate),
+            loss='mse'
         )
+        
+        # 打印模型摘要
+        self.model.summary()
     
     def train(
         self,

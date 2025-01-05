@@ -1,5 +1,9 @@
 # 自編碼器實驗配置
 
+# 數據目錄配置
+data_dir: "WavData/AutoEncoderData"
+original_data_dir: "WavData/OriginalData"
+
 # 音頻處理配置
 audio:
   sr: 16000
@@ -11,24 +15,20 @@ audio:
 
 # 模型結構配置
 model:
-  num_classes: 10
-  latent_dim: 128      # 潛在空間維度
-  filters: [32, 64, 96, 128]
+  input_shape: 674816  # 輸入特徵的維度
+  latent_dim: 128     # 潛在空間的維度
+  filters: [32, 64, 128, 256]  # 每層卷積的濾波器數量
+  kernel_sizes: [5, 5, 5, 5]  # 每層卷積的核大小
+  dilation_rates: [1, 1, 1, 1]  # 每層卷積的擴張率
   dropout_rate: 0.5
-  learning_rate: 0.0001
-  kernel_sizes:
-    - [5, 5]
-    - [3, 3]
-    - [3, 3]
-    - [3, 3]
-  dilation_rates: [2, 2, 4, 4]
+  learning_rate: 0.001
   reconstruction_weight: 0.5  # 重建損失的權重
   classification_weight: 0.5  # 分類損失的權重
   use_skip_connections: true  # 是否使用跳躍連接
 
 # 訓練配置
 training:
-  epochs: 4
+  epochs: 100
   batch_size: 32
   early_stopping_patience: 3
   outside_test_ratio: 0.2
