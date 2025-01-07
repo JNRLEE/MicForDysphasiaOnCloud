@@ -12,7 +12,7 @@ from collections import Counter
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from base.class_config import (
+from Model.base.class_config import (
     SELECTION_TYPES,
     SCORE_THRESHOLDS,
     CLASS_CONFIG,

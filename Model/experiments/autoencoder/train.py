@@ -1,4 +1,4 @@
-# 此代碼實現了自動編碼器的訓練流程，包含特徵維度統一化
+# 此代碼實現了自動編碼器的訓練流程，包含特徵維度統一化和評估功能
 
 import os
 import logging
@@ -22,6 +22,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from experiments.autoencoder.config import load_config
 from experiments.autoencoder.model import AutoencoderModel
 from data_loaders.autoencoder_loader import AutoEncoderDataLoader
+from Model.utils.evaluation import evaluate_model
 
 def setup_logging():
     """設置日誌配置"""
@@ -71,21 +72,28 @@ def prepare_data(
     if logger:
         logger.info(f"原始特徵形狀: {features.shape}")
     
-    # 標準化特徵維度
-    norm_features = normalize_feature_dim(features)
+    # 標準化特徵維度為 370
+    norm_features = normalize_feature_dim(features, target_dim=370)
+    
+    # 複製特徵以達到 feature_dim * 2 的效果
+    # 這裡模擬 _combine_features 的行為
+    doubled_features = np.concatenate([norm_features, norm_features], axis=-1)
+    
+    if logger:
+        logger.info(f"處理後的特徵形狀: {doubled_features.shape}")
     
     # 計算分割索引
-    split_idx = int(len(norm_features) * (1 - val_split))
+    split_idx = int(len(doubled_features) * (1 - val_split))
     
     # 準備訓練數據
     train_data = {
-        'encoder_input': norm_features[:split_idx],
+        'encoder_input': doubled_features[:split_idx],
         'classifier_output': tf.keras.utils.to_categorical(labels[:split_idx])
     }
     
     # 準備驗證數據
     val_data = {
-        'encoder_input': norm_features[split_idx:],
+        'encoder_input': doubled_features[split_idx:],
         'classifier_output': tf.keras.utils.to_categorical(labels[split_idx:])
     }
     
@@ -114,6 +122,9 @@ def setup_callbacks(save_dir: str) -> list:
             patience=3,
             restore_best_weights=True,
             verbose=1
+        ),
+        tf.keras.callbacks.CSVLogger(
+            os.path.join(save_dir, 'training_log.csv')
         )
     ]
     return callbacks
@@ -122,14 +133,27 @@ def train_model(
     model: AutoencoderModel,
     train_data: Dict[str, np.ndarray],
     val_data: Dict[str, np.ndarray],
-    config: dict
-) -> None:
-    """訓練模型"""
-    callbacks = setup_callbacks(config.get('save_dir', 'saved_models'))
+    config: dict,
+    logger: logging.Logger
+) -> Tuple[Dict, Dict]:
+    """訓練並評估模型
     
-    # 設定簡化的訓練參數
-    batch_size = config.get('batch_size', 32)
-    epochs = 2  # 簡化為2個epoch
+    Args:
+        model: 模型實例
+        train_data: 訓練數據
+        val_data: 驗證數據
+        config: 配置字典
+        logger: 日誌記錄器
+        
+    Returns:
+        Tuple[Dict, Dict]: (訓練歷史, 評估結果)
+    """
+    # 設置保存目錄
+    save_dir = Path(config.get('save_dir', 'saved_models'))
+    save_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 設置回調
+    callbacks = setup_callbacks(str(save_dir))
     
     # 訓練模型
     history = model.fit(
@@ -139,13 +163,22 @@ def train_model(
             val_data['encoder_input'],
             val_data['classifier_output']
         ),
-        batch_size=batch_size,
-        epochs=epochs,
+        batch_size=config.get('batch_size', 32),
+        epochs=2,  # 簡化為2個epoch
         callbacks=callbacks,
         verbose=1
     )
     
-    return history
+    # 評估模型
+    evaluation_results = evaluate_model(
+        model,
+        val_data,
+        val_data['classifier_output'],
+        str(save_dir),
+        logger
+    )
+    
+    return history.history, evaluation_results
 
 def main():
     """主函數"""
@@ -167,7 +200,7 @@ def main():
         
         # 更新模型配置中的輸入形狀
         model_config = config.get('model', {})
-        model_config['input_shape'] = (512, 370)  # 使用原始特徵維度
+        model_config['input_shape'] = (512, 370 * 2)  # 固定特徵維度
         
         # 準備訓練和驗證數據
         train_data, val_data = prepare_data(
@@ -183,13 +216,13 @@ def main():
         logger.info("成功構建模型")
         
         # 訓練模型
-        history = train_model(model, train_data, val_data, model_config)
+        history, evaluation = train_model(model, train_data, val_data, model_config, logger)
         logger.info("模型訓練完成")
         
         # 保存訓練歷史
         history_file = os.path.join(model_config.get('save_dir', 'saved_models'), 'training_history.json')
         with open(history_file, 'w') as f:
-            json.dump(history.history, f)
+            json.dump(history, f, indent=2)
         logger.info(f"訓練歷史已保存到 {history_file}")
         
     except Exception as e:

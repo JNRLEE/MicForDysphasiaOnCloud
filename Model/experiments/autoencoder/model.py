@@ -32,7 +32,7 @@ from tensorflow.keras.optimizers import Adam
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from base.class_config import get_num_classes
+from base.class_config import get_num_classes, get_active_class_names
 
 class AutoencoderModel:
     def __init__(self, config: Dict):
@@ -42,9 +42,10 @@ class AutoencoderModel:
             config: 配置字典，包含模型參數
         """
         self.time_steps = 512  # 固定時間步長
-        self.feature_dim = 370  # 特徵維度
+        self.feature_dim = 370 * 2  # 合併後的特徵維度
         self.learning_rate = config.get('learning_rate', 1e-4)
-        self.num_classes = get_num_classes()
+        self.num_classes = get_num_classes()  # 從 class_config 獲取類別數
+        self.class_names = get_active_class_names()  # 獲取類別名稱
         
         # 初始化模型
         self.model = None
@@ -81,7 +82,7 @@ class AutoencoderModel:
         x = Dense(128, activation='relu', name='dense2')(x)
         x = Dropout(0.5)(x)
         
-        # 輸出層
+        # 輸出層 - 使用動態類別數
         outputs = Dense(self.num_classes, activation='softmax', name='classifier_output')(x)
         
         # 創建模型
@@ -96,6 +97,11 @@ class AutoencoderModel:
         
         # 打印模型摘要
         self.model.summary()
+        
+        # 打印類別信息
+        print("\n類別配置:")
+        for i, class_name in enumerate(self.class_names):
+            print(f"  {i}: {class_name}")
     
     def fit(self, *args, **kwargs):
         """訓練模型的包裝函數"""
