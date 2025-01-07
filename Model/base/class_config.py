@@ -5,12 +5,15 @@
 2. 提供中文實驗類型到英文類別的映射
 3. 提供數據過濾和標籤更新功能
 4. 支持靈活的二分類和多分類配置
+
+警告：此文件包含關鍵的類別配置和數據讀取邏輯，修改前必須諮詢負責人
 """
 
 from typing import Dict, List, Tuple, Optional
 import numpy as np
 import json
 import os
+import tensorflow as tf
 
 # 評分閾值配置（可調整）
 SCORE_THRESHOLDS = {
@@ -130,6 +133,8 @@ def classify_sample(selection: str, score: int) -> Optional[str]:
 def read_info_json(info_path: str) -> Optional[Dict]:
     """讀取並解析info.json文件
     
+    警告：此函數處理關鍵的實驗信息文件，不要隨意修改讀取邏輯，如需更改請先諮詢
+    
     Args:
         info_path: info文件的路徑
         
@@ -207,3 +212,54 @@ def filter_data(data: np.ndarray, labels: np.ndarray, label_names: List[str]) ->
     filtered_labels = labels[mask]
     
     return filtered_data, filtered_labels 
+
+def convert_to_one_hot(labels: np.ndarray) -> np.ndarray:
+    """將標籤轉換為 one-hot 編碼
+    
+    Args:
+        labels: 原始標籤索引
+        
+    Returns:
+        np.ndarray: one-hot 編碼後的標籤
+    """
+    num_classes = get_num_classes()
+    return tf.keras.utils.to_categorical(labels, num_classes=num_classes)
+
+def convert_from_one_hot(one_hot_labels: np.ndarray) -> np.ndarray:
+    """將 one-hot 編碼轉換回標籤索引
+    
+    Args:
+        one_hot_labels: one-hot 編碼的標籤
+        
+    Returns:
+        np.ndarray: 標籤索引
+    """
+    return np.argmax(one_hot_labels, axis=1) 
+
+def get_class_from_info(info: Dict) -> Optional[str]:
+    """從 info 字典中獲取類別名稱
+    
+    Args:
+        info: info 字典，包含 selection 和 score 字段
+        
+    Returns:
+        Optional[str]: 類別名稱，如果無法確定類別則返回 None
+    """
+    selection = info.get('selection')
+    score = info.get('score')
+    
+    if selection is None or score is None:
+        return None
+        
+    return classify_sample(selection, score)
+
+def is_class_active(class_name: str) -> bool:
+    """檢查類別是否處於激活狀態
+    
+    Args:
+        class_name: 類別名稱
+        
+    Returns:
+        bool: 類別是否激活
+    """
+    return CLASS_CONFIG.get(class_name, 0) == 1 

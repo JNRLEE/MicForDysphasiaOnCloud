@@ -1,8 +1,8 @@
 # 自編碼器實驗配置
 
 # 數據目錄配置
-data_dir: "WavData/AutoEncoderData"
-original_data_dir: "WavData/OriginalData"
+data_dir: "/Users/jnrle/Library/CloudStorage/GoogleDrive-jenner.lee.com@gmail.com/My Drive/MicforDysphagia/WavData/AutoEncoderData"
+original_data_dir: "/Users/jnrle/Library/CloudStorage/GoogleDrive-jenner.lee.com@gmail.com/My Drive/MicforDysphagia/WavData/OriginalData"
 
 # 音頻處理配置
 audio:
@@ -15,26 +15,25 @@ audio:
 
 # 模型結構配置
 model:
-  input_shape: 674816  # 輸入特徵的維度
-  latent_dim: 128     # 潛在空間的維度
-  filters: [32, 64, 128, 256]  # 每層卷積的濾波器數量
-  kernel_sizes: [5, 5, 5, 5]  # 每層卷積的核大小
-  dilation_rates: [1, 1, 1, 1]  # 每層卷積的擴張率
+  time_steps: 512  # 固定時間步長
+  latent_dim: 128  # 潛在空間的維度
+  filters: [64, 32, 16]  # 每層卷積的濾波器數量
+  kernel_sizes: [3, 3, 3]  # 每層卷積的核大小
+  dilation_rates: [1, 2, 4]  # 每層卷積的擴張率
   dropout_rate: 0.5
   learning_rate: 0.001
-  reconstruction_weight: 0.5  # 重建損失的權重
-  classification_weight: 0.5  # 分類損失的權重
+  reconstruction_weight: 0.8  # 重建損失的權重
+  classification_weight: 0.2  # 分類損失的權重
   use_skip_connections: true  # 是否使用跳躍連接
 
 # 訓練配置
 training:
   epochs: 100
   batch_size: 32
-  early_stopping_patience: 3
-  outside_test_ratio: 0.2
+  early_stopping_patience: 10
   validation_ratio: 0.2
   model_save_path: "trained_autoencoder.keras"
-  pretrain_epochs: 2  # 預訓練epochs數（只訓練重建）
+  save_dir: "saved_models"
 
 # 數據集配置
 dataset:
