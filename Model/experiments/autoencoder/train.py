@@ -75,32 +75,30 @@ def prepare_data(
     # 標準化特徵維度為 370
     norm_features = normalize_feature_dim(features, target_dim=370)
     
-    # 複製特徵以達到 feature_dim * 2 的效果
-    # 這裡模擬 _combine_features 的行為
-    doubled_features = np.concatenate([norm_features, norm_features], axis=-1)
+    # 創建全局特徵（模擬 tokens）
+    global_features = np.mean(norm_features, axis=1, keepdims=True)  # (batch_size, 1, 370)
+    expanded_global = np.repeat(global_features, 512, axis=1)  # (batch_size, 512, 370)
+    
+    # 合併局部和全局特徵
+    combined_features = np.concatenate([norm_features, expanded_global], axis=-1)
     
     if logger:
-        logger.info(f"處理後的特徵形狀: {doubled_features.shape}")
+        logger.info(f"處理後的特徵形狀: {combined_features.shape}")
     
     # 計算分割索引
-    split_idx = int(len(doubled_features) * (1 - val_split))
+    split_idx = int(len(combined_features) * (1 - val_split))
     
-    # 準備訓練數據
+    # 準備訓練和驗證數據
     train_data = {
-        'encoder_input': doubled_features[:split_idx],
+        'encoder_input': combined_features[:split_idx],
         'classifier_output': tf.keras.utils.to_categorical(labels[:split_idx])
     }
     
     # 準備驗證數據
     val_data = {
-        'encoder_input': doubled_features[split_idx:],
+        'encoder_input': combined_features[split_idx:],
         'classifier_output': tf.keras.utils.to_categorical(labels[split_idx:])
     }
-    
-    if logger:
-        logger.info(f"訓練數據形狀:")
-        for key, value in train_data.items():
-            logger.info(f"  {key}: {value.shape}")
     
     return train_data, val_data
 
@@ -195,7 +193,7 @@ def main():
             config.data_dir,
             config.original_data_dir
         )
-        features, labels, filenames = data_loader.load_data()  # 修改為接收3個返回值
+        features, labels, filenames = data_loader.load_data()  # 保持原有的3個返回值
         logger.info(f"加載了 {len(features)} 個樣本")
         
         # 更新模型配置中的輸入形狀
