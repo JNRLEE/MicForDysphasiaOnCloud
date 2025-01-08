@@ -9,13 +9,20 @@ import json
 import random
 import os
 import sys
+from collections import Counter
 
 import tensorflow as tf
 import numpy as np
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, TensorBoard
+from sklearn.decomposition import PCA
+
+# 添加項目根目錄到 Python 路徑
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from Model.data_loaders.autoencoder_loader import AutoEncoderDataLoader
-from Model.base.class_config import get_num_classes, get_active_class_names
+from Model.base.class_config import get_num_classes, get_active_class_names, CLASS_CONFIG
 from Model.base.visualization import VisualizationTool
+from Model.experiments.autoencoder.model import AutoencoderModel
 
 def setup_logger() -> logging.Logger:
     """設置日誌記錄器
@@ -61,33 +68,70 @@ def save_history(history, save_dir: str):
     with open(history_file, 'w') as f:
         json.dump(history.history, f, indent=2)
 
-# 此代碼實現了自動編碼器的訓練流程，包含特徵維度統一化和評估功能
+def print_class_config():
+    """打印當前使用的類別配置"""
+    print("\n=== 當前類別配置 ===")
+    for class_name, is_active in CLASS_CONFIG.items():
+        status = "啟用" if is_active == 1 else "停用"
+        print(f"{class_name}: {status}")
+    print("==================\n")
 
-import os
-import logging
-from pathlib import Path
-from typing import Tuple, Dict, List, Optional
-import json
-import random
+def print_split_info(
+    split_name: str,
+    features: np.ndarray,
+    labels: np.ndarray,
+    patient_ids: List[str]
+):
+    """打印數據集分割的詳細信息
+    
+    Args:
+        split_name: 分割名稱 (train/val/test)
+        features: 特徵數據
+        labels: 標籤數據
+        patient_ids: 受試者ID列表
+    """
+    print(f"\n=== {split_name} 集資訊 ===")
+    print(f"樣本數量: {len(features)}")
+    print(f"特徵形狀: {features.shape}")
+    
+    # 打印受試者ID
+    unique_patients = sorted(set(patient_ids))
+    print(f"受試者 ({len(unique_patients)}): {', '.join(unique_patients)}")
+    
+    # 統計每個類別的樣本數
+    label_names = get_active_class_names()
+    label_counts = Counter(labels)
+    print("\n各類別樣本數:")
+    for label_idx, count in sorted(label_counts.items()):
+        print(f"{label_names[label_idx]}: {count} 筆")
+    print("==================\n")
 
-import tensorflow as tf
-import numpy as np
-from tensorflow.keras.callbacks import (
-    ModelCheckpoint,
-    EarlyStopping,
-    ReduceLROnPlateau,
-    TensorBoard
-)
-from sklearn.decomposition import PCA
-
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
-from experiments.autoencoder.config import load_config
-from experiments.autoencoder.model import AutoencoderModel
-from data_loaders.autoencoder_loader import AutoEncoderDataLoader
-from Model.utils.evaluation import evaluate_model
-from base.class_config import get_num_classes
+def print_confusion_matrix_text(y_true: np.ndarray, y_pred: np.ndarray, label_names: List[str]):
+    """以文字形式打印混淆矩陣
+    
+    Args:
+        y_true: 真實標籤
+        y_pred: 預測標籤
+        label_names: 標籤名稱列表
+    """
+    from sklearn.metrics import confusion_matrix
+    cm = confusion_matrix(y_true, y_pred)
+    
+    print("\n=== 混淆矩陣 ===")
+    # 打印標籤
+    label_width = max(len(name) for name in label_names)
+    print(" " * (label_width + 2), end="")
+    for name in label_names:
+        print(f"{name:^10}", end=" ")
+    print("\n")
+    
+    # 打印矩陣內容
+    for i, row in enumerate(cm):
+        print(f"{label_names[i]:<{label_width}}", end="  ")
+        for val in row:
+            print(f"{val:^10}", end=" ")
+        print()
+    print("==================\n")
 
 def normalize_feature_dim(features: np.ndarray, target_dim: int = 370) -> np.ndarray:
     """標準化特徵維度
@@ -158,7 +202,7 @@ def split_subjects(
             n_train = n_subjects - 2
             n_val = 1
         else:
-            raise ValueError(f"受試者數量（{n_subjects}）不足，無法保證每個子集至少有一個受試者")
+            raise ValueError(f"受試者數量（{n_subjects}）不足，無法保證每個個子集至少有一個受試者")
     
     # 分割受試者
     train_subjects = unique_subjects[:n_train]
@@ -213,19 +257,10 @@ def prepare_data(
     val_patients = unique_patients[train_size:train_size + val_size]
     test_patients = unique_patients[train_size + val_size:]
     
-    if logger:
-        logger.info(f"訓練集受試者: {len(train_patients)} 人")
-        logger.info(f"驗證集受試者: {len(val_patients)} 人")
-        logger.info(f"測試集受試者: {len(test_patients)} 人")
-    
     # 根據受試者ID分割數據
     train_indices = [i for i, pid in enumerate(patient_ids) if pid in train_patients]
     val_indices = [i for i, pid in enumerate(patient_ids) if pid in val_patients]
     test_indices = [i for i, pid in enumerate(patient_ids) if pid in test_patients]
-    
-    # 檢查索引有效性
-    if not train_indices or not val_indices or not test_indices:
-        raise ValueError("數據分割後某個集合為空")
     
     # 創建數據集
     train_features = features[train_indices]
@@ -235,10 +270,10 @@ def prepare_data(
     test_features = features[test_indices]
     test_labels = labels[test_indices]
     
-    if logger:
-        logger.info(f"訓練集樣本數: {len(train_features)}")
-        logger.info(f"驗證集樣本數: {len(val_features)}")
-        logger.info(f"測試集樣本數: {len(test_features)}")
+    # 打印分割信息
+    print_split_info("訓練", train_features, train_labels, [patient_ids[i] for i in train_indices])
+    print_split_info("驗證", val_features, val_labels, [patient_ids[i] for i in val_indices])
+    print_split_info("測試", test_features, test_labels, [patient_ids[i] for i in test_indices])
     
     return (train_features, train_labels), (val_features, val_labels), (test_features, test_labels)
 
@@ -279,38 +314,16 @@ def create_model(input_shape: Tuple[int, ...]) -> tf.keras.Model:
     Returns:
         tf.keras.Model: 創建的模型
     """
-    num_classes = get_num_classes()
+    config = {
+        'time_steps': input_shape[0],
+        'feature_dim': input_shape[1] // 2,  # 因為我們的特徵是合併後的，所以除以2
+        'learning_rate': 0.001,
+        'dropout_rate': 0.5
+    }
     
-    model = tf.keras.Sequential([
-        # 輸入層
-        tf.keras.layers.Input(shape=input_shape),
-        
-        # 特徵提取層
-        tf.keras.layers.Conv1D(64, 3, activation='relu', padding='same'),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.MaxPooling1D(2),
-        
-        tf.keras.layers.Conv1D(32, 3, activation='relu', padding='same'),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.MaxPooling1D(2),
-        
-        # 全局池化層
-        tf.keras.layers.GlobalAveragePooling1D(),
-        
-        # 分類層
-        tf.keras.layers.Dense(128, activation='relu'),
-        tf.keras.layers.Dropout(0.5),
-        tf.keras.layers.Dense(num_classes, activation='softmax')
-    ])
-    
-    # 編譯模型
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-        loss='categorical_crossentropy',
-        metrics=['accuracy']
-    )
-    
-    return model
+    model = AutoencoderModel(config)
+    model.build()
+    return model.model
 
 def evaluate_model(model: tf.keras.Model, test_data: Dict, save_dir: str):
     """評估模型
@@ -326,7 +339,7 @@ def evaluate_model(model: tf.keras.Model, test_data: Dict, save_dir: str):
         test_data['classifier_output']
     )
     
-    # �取預測結果
+    # 獲取預測結果
     y_pred_proba = model.predict(test_data['encoder_input'])
     y_pred = np.argmax(y_pred_proba, axis=1)
     y_true = np.argmax(test_data['classifier_output'], axis=1)
@@ -344,6 +357,9 @@ def evaluate_model(model: tf.keras.Model, test_data: Dict, save_dir: str):
         label_names=label_names,
         filename='confusion_matrix.png'
     )
+    
+    # 打印混淆矩陣
+    print_confusion_matrix_text(y_true, y_pred, label_names)
     
     # 保存評估結果
     evaluation_results = {
@@ -429,6 +445,9 @@ def main():
     logger = setup_logger()
     
     try:
+        # 打印類別配置
+        print_class_config()
+        
         # 加載數據
         features, labels, filenames, patient_ids = load_data()
         logger.info(f"加載了 {len(features)} 個樣本")
