@@ -304,78 +304,82 @@ class AutoEncoderDataLoader:
             self.logger.error(f"獲取標籤失敗 {exp_dir}: {str(e)}")
             return None
 
-    def load_data(self) -> Tuple[np.ndarray, np.ndarray, List[str]]:
-        """加載數據
-        
+    def load_data(self) -> Tuple[np.ndarray, np.ndarray, List[str], List[str]]:
+        """加載數據並將特徵填充到相同長度
+
         Returns:
-            Tuple[np.ndarray, np.ndarray, List[str]]: 特徵數組、標籤數組和文件名列表
+            Tuple[np.ndarray, np.ndarray, List[str], List[str]]: 特徵數組、標籤數組、文件名列表和受試者ID列表
         """
         all_features = []
         all_labels = []
         all_filenames = []
-        feature_shapes = []
+        all_patient_ids = []
+        max_length = 0
         
-        # 遍歷每個實驗目錄
+        # 第一次遍歷找出最大長度
         for exp_dir in self._find_experiment_dirs():
             try:
-                # 獲取標籤
                 label = self._get_label_from_directory(exp_dir)
                 if label is None:
                     continue
-                    
-                # 處理實驗目錄
-                features, tokens, filenames = self._process_experiment_dir(exp_dir)
+                
+                features, tokens, filename = self._process_experiment_dir(exp_dir)
                 if features is None or len(features) == 0:
                     continue
-
-                # 記錄特徵形狀
-                feature_shapes.append(features.shape[1:])
                 
-                # 添加到結果列表
-                all_features.append(features)
-                all_labels.extend([label] * len(features))
-                all_filenames.extend(filenames)
+                max_length = max(max_length, features.shape[2])
                 
             except Exception as e:
-                self.logger.error(f"處理目錄失敗 {exp_dir}: {str(e)}")
+                self.logger.error(f"處理實驗目錄失敗 {exp_dir}: {str(e)}")
                 continue
-                
-        if not all_features:
-            raise ValueError("沒有找到有效的數據")
-            
-        # 檢查特徵形狀
-        unique_shapes = set(str(shape) for shape in feature_shapes)
-        if len(unique_shapes) > 1:
-            self.logger.warning(f"發現不同的特徵形狀: {unique_shapes}")
-            
-        # 找到最常見的特徵形狀
-        shape_counter = Counter(str(shape) for shape in feature_shapes)
-        most_common_shape = eval(shape_counter.most_common(1)[0][0])
         
-        # 標準化所有特徵到最常見的形狀
-        standardized_features = []
-        for features in all_features:
-            if features.shape[1:] != most_common_shape:
-                self.logger.info(f"調整特徵形狀從 {features.shape[1:]} 到 {most_common_shape}")
-                features = self._standardize_features(features, most_common_shape)
-            standardized_features.append(features)
+        # 第二次遍歷，填充特�到相同長度
+        for exp_dir in self._find_experiment_dirs():
+            try:
+                label = self._get_label_from_directory(exp_dir)
+                if label is None:
+                    continue
+                
+                features, tokens, filename = self._process_experiment_dir(exp_dir)
+                if features is None or len(features) == 0:
+                    continue
+                
+                info_path = self._get_feature_info_path(exp_dir)
+                if info_path and info_path.exists():
+                    info_data = self._load_original_info(info_path)
+                    if info_data:
+                        patient_id = info_data.get('patientID', '')
+                        if patient_id:
+                            # 填充特徵到最大長度
+                            if len(features.shape) == 3 and features.shape[1] == 512:
+                                padded_features = np.pad(
+                                    features,
+                                    ((0, 0), (0, 0), (0,max_length - features.shape[2])),
+                                    mode='constant',
+                                    constant_values=0
+                                )
+                                all_features.append(padded_features)
+                                all_labels.extend([label] * len(features))
+                                all_filenames.extend([filename] * len(features))
+                                all_patient_ids.extend([patient_id] * len(features))
+                            else:
+                                self.logger.warning(f"特徵形狀不正確: {features.shape}")
             
-        # 合併所有特徵
-        try:
-            features = np.concatenate(standardized_features, axis=0)
-            labels = np.array(all_labels)
-            
-            # 確保特徵和標籤的數量匹配
-            if len(features) != len(labels):
-                raise ValueError(f"特徵數量 ({len(features)}) 與標籤數量 ({len(labels)}) 不匹配")
-            if len(features) != len(all_filenames):
-                raise ValueError(f"特徵數量 ({len(features)}) 與文件名數量 ({len(all_filenames)}) 不匹配")
-            
-            self.logger.info(f"成功加載 {len(features)} 個特徵，形狀為 {features.shape}")
-            return features, labels, all_filenames
-            
-        except Exception as e:
-            raise ValueError(f"合併特徵失敗: {str(e)}")
+            except Exception as e:
+                self.logger.error(f"處理實驗目錄失敗 {exp_dir}: {str(e)}")
+                continue
+
+        if len(all_features) == 0:
+            raise ValueError("沒有找到有效的數據")
+
+        # 將所有特徵堆疊成一個數組
+        features_array = np.concatenate(all_features, axis=0)
+        labels_array = np.array(all_labels)
+        
+        self.logger.info(f"成功加載 {len(features_array)} 個特徵，形狀為 {features_array.shape}")
+        self.logger.info(f"特徵已填充到最大長度: {max_length}")
+        
+        return features_array, labels_array, all_filenames, all_patient_ids
 
     def _process_experiment_dir(self, exp_dir: Path) -> Tuple[np.ndarray, np.ndarray, List[str]]:
         """處理實驗目錄中的特徵文件

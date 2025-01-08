@@ -14,7 +14,6 @@ from typing import Optional, Dict, Any, Tuple, List
 
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras import backend as K
 from tensorflow.keras.layers import (
     Input,
     Dense,
@@ -23,14 +22,10 @@ from tensorflow.keras.layers import (
     MaxPooling1D,
     BatchNormalization,
     Activation,
-    GlobalAveragePooling1D,
-    Reshape
+    GlobalAveragePooling1D
 )
 from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
-
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from base.class_config import get_num_classes, get_active_class_names
 
@@ -41,9 +36,10 @@ class AutoencoderModel:
         Args:
             config: 配置字典，包含模型參數
         """
-        self.time_steps = 512  # 固定時間步長
-        self.feature_dim = 370 * 2  # 合併後的特徵維度
+        self.time_steps = config.get('time_steps', 512)  # 時間步長，默認512
+        self.feature_dim = config.get('feature_dim', 370) * 2  # 特徵維度，考慮合併後的維度
         self.learning_rate = config.get('learning_rate', 1e-4)
+        self.dropout_rate = config.get('dropout_rate', 0.5)
         self.num_classes = get_num_classes()  # 從 class_config 獲取類別數
         self.class_names = get_active_class_names()  # 獲取類別名稱
         
@@ -78,9 +74,9 @@ class AutoencoderModel:
         
         # 全連接層
         x = Dense(256, activation='relu', name='dense1')(x)
-        x = Dropout(0.5)(x)
+        x = Dropout(self.dropout_rate)(x)
         x = Dense(128, activation='relu', name='dense2')(x)
-        x = Dropout(0.5)(x)
+        x = Dropout(self.dropout_rate)(x)
         
         # 輸出層 - 使用動態類別數
         outputs = Dense(self.num_classes, activation='softmax', name='classifier_output')(x)
