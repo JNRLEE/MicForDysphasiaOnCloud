@@ -14,7 +14,8 @@ import tensorflow as tf
 import numpy as np
 
 from Model.data_loaders.autoencoder_loader import AutoEncoderDataLoader
-from base.class_config import get_num_classes
+from Model.base.class_config import get_num_classes, get_active_class_names
+from Model.base.visualization import VisualizationTool
 
 def setup_logger() -> logging.Logger:
     """設置日誌記錄器
@@ -325,6 +326,25 @@ def evaluate_model(model: tf.keras.Model, test_data: Dict, save_dir: str):
         test_data['classifier_output']
     )
     
+    # �取預測結果
+    y_pred_proba = model.predict(test_data['encoder_input'])
+    y_pred = np.argmax(y_pred_proba, axis=1)
+    y_true = np.argmax(test_data['classifier_output'], axis=1)
+    
+    # 獲取類別名稱
+    label_names = get_active_class_names()
+    
+    # 創建可視化工具並生成混淆矩陣
+    viz_dir = os.path.join(save_dir, 'visualizations')
+    os.makedirs(viz_dir, exist_ok=True)
+    viz_tool = VisualizationTool(save_dir=viz_dir)
+    viz_tool.plot_confusion_matrix(
+        y_true=y_true,
+        y_pred=y_pred,
+        label_names=label_names,
+        filename='confusion_matrix.png'
+    )
+    
     # 保存評估結果
     evaluation_results = {
         'test_loss': float(test_loss),
@@ -422,7 +442,7 @@ def main():
         norm_features = normalize_feature_dim(features, target_dim=740)
         logger.info(f"處理後的特徵形狀: {norm_features.shape}")
         
-        # �備數據集
+        # 準備數據集
         (train_features, train_labels), (val_features, val_labels), (test_features, test_labels) = prepare_data(
             norm_features,
             labels,
@@ -437,7 +457,7 @@ def main():
         val_labels_onehot = tf.keras.utils.to_categorical(val_labels, num_classes=num_classes)
         test_labels_onehot = tf.keras.utils.to_categorical(test_labels, num_classes=num_classes)
 
-        # 置保存目錄
+        # 設置保存目錄
         save_dir = setup_save_dir()
         
         # 創建和編譯模型
@@ -456,19 +476,12 @@ def main():
             callbacks=callbacks
         )
         
-        # 評估模型
-        test_loss, test_accuracy = model.evaluate(test_features, test_labels_onehot)
-        logger.info(f"測試集損失: {test_loss:.4f}")
-        logger.info(f"測試集準確率: {test_accuracy:.4f}")
-        
-        # 保存評估結果
-        evaluation_results = {
-            'test_loss': float(test_loss),
-            'test_accuracy': float(test_accuracy)
+        # 評估模型並生成混淆矩陣
+        test_data = {
+            'encoder_input': test_features,
+            'classifier_output': test_labels_onehot
         }
-        evaluation_file = os.path.join(save_dir, 'evaluation_results.json')
-        with open(evaluation_file, 'w') as f:
-            json.dump(evaluation_results, f, indent=2)
+        evaluate_model(model, test_data, save_dir)
         
         # 保存訓練歷史
         save_history(history, save_dir)
