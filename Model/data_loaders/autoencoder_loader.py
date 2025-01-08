@@ -223,6 +223,9 @@ class AutoEncoderDataLoader:
                     if tokens is not None and token_shape:
                         try:
                             tokens = np.array(tokens, dtype=np.float32).reshape(token_shape)
+                            # 如果 tokens 的形狀是 (batch, 1, feature_dim)，擴展到 (batch, 512, feature_dim)
+                            if tokens.shape[1] == 1:
+                                tokens = np.repeat(tokens, 512, axis=1)
                         except ValueError as e:
                             self.logger.warning(f"無法將標記重塑為 {token_shape}: {str(e)}")
 
@@ -232,14 +235,17 @@ class AutoEncoderDataLoader:
             if tokens is not None:
                 tokens = np.array(tokens, dtype=np.float32)
 
+            # 如果有 tokens，合併 features 和 tokens
+            if features is not None and tokens is not None:
+                features = self._combine_features(features, tokens)
+
             # 記錄形狀信息
-            self.logger.info(f"特徵形狀: {features.shape if features is not None else None}")
-            self.logger.info(f"標記形狀: {tokens.shape if tokens is not None else None}")
+            self.logger.info(f"最終特徵形狀: {features.shape if features is not None else None}")
 
             # 獲取文件名
             filename = feature_file.stem
 
-            return features, tokens, filename
+            return features, None, filename  # 返回合併後的特徵，tokens 設為 None
 
         except Exception as e:
             raise ValueError(f"加載特徵文件失敗 {feature_file}: {str(e)}")
@@ -333,7 +339,7 @@ class AutoEncoderDataLoader:
                 self.logger.error(f"處理實驗目錄失敗 {exp_dir}: {str(e)}")
                 continue
         
-        # 第二次遍歷，填充特�到相同長度
+        # 第二次遍歷，填充特到相同長度
         for exp_dir in self._find_experiment_dirs():
             try:
                 label = self._get_label_from_directory(exp_dir)
@@ -435,39 +441,28 @@ class AutoEncoderDataLoader:
             raise ValueError(f"處理實驗目錄失敗 {exp_dir}: {str(e)}")
 
     def _combine_features(self, features: np.ndarray, tokens: np.ndarray) -> np.ndarray:
-        """合併特徵和標記數據，統一維度
+        """合併特徵和標記數據
         
         Args:
-            features: shape (1, 512, feature_dim)
-            tokens: shape (1, 1, feature_dim)
+            features: shape (batch, 512, feature_dim)
+            tokens: shape (batch, 512, feature_dim) 或 (batch, 1, feature_dim)
             
         Returns:
-            combined: shape (1, 512, feature_dim * 2)
+            combined: shape (batch, 512, feature_dim * 2)
         """
-        if features is None and tokens is None:
-            raise ValueError("特徵和標記數據都為空")
-        
-        if features is None:
-            # 如果只有tokens，將其擴展到512個時間步
-            return np.repeat(tokens, 512, axis=1)
-        
-        if tokens is None:
-            # 如果只有features，直接返回
-            return features
-        
-        # 檢查第三維度是否相同
-        if features.shape[2] != tokens.shape[2]:
-            raise ValueError(f"特徵和標記的第三維度不匹配: features={features.shape}, tokens={tokens.shape}")
-        
-        # 檢查批次大小是否相同
-        if features.shape[0] != tokens.shape[0]:
-            raise ValueError(f"特徵和標記的批次大小不匹配: features={features.shape}, tokens={tokens.shape}")
-        
-        # 將tokens擴展到與features相同的時間步長
-        expanded_tokens = np.repeat(tokens, 512, axis=1)
-        
+        if features is None or tokens is None:
+            return features if features is not None else tokens
+
+        # 確保 tokens 的時間步長與 features 相同
+        if tokens.shape[1] == 1:
+            tokens = np.repeat(tokens, features.shape[1], axis=1)
+
+        # 檢查形狀是否匹配
+        if features.shape[0] != tokens.shape[0] or features.shape[1] != tokens.shape[1]:
+            raise ValueError(f"特徵和標記的形狀不匹配: features={features.shape}, tokens={tokens.shape}")
+
         # 在特徵維度上合併
-        combined = np.concatenate([features, expanded_tokens], axis=-1)
+        combined = np.concatenate([features, tokens], axis=-1)
         self.logger.info(f"合併後的特徵形狀: {combined.shape}")
         
         return combined

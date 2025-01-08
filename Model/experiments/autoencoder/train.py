@@ -422,16 +422,9 @@ def main():
         norm_features = normalize_feature_dim(features, target_dim=740)
         logger.info(f"處理後的特徵形狀: {norm_features.shape}")
         
-        # 創建全局特徵
-        global_features = np.mean(norm_features, axis=1, keepdims=True)
-        expanded_global = np.repeat(global_features, norm_features.shape[1], axis=1)
-        
-        # 合併局部和全局特徵
-        combined_features = np.concatenate([norm_features, expanded_global], axis=-1)
-        
-        # 準備數據集
+        # �備數據集
         (train_features, train_labels), (val_features, val_labels), (test_features, test_labels) = prepare_data(
-            combined_features,
+            norm_features,
             labels,
             filenames,
             patient_ids,

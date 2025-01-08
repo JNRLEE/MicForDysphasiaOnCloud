@@ -17,8 +17,8 @@ import tensorflow as tf
 
 # 評分閾值配置（可調整）
 SCORE_THRESHOLDS = {
-    'normal': 0,      # score == 0 為正常人
-    'patient': 10      # score > 3 為病人
+    'normal': 1,      # score <= 1 為正常人
+    'patient': 3      # score >= 3 為病人
 }
 
 # 實驗類型映射字典（不可修改）
@@ -180,7 +180,7 @@ def is_patient(score: int) -> bool:
     Returns:
         bool: 是否為病人
     """
-    return score > SCORE_THRESHOLDS['patient']
+    return score >= SCORE_THRESHOLDS['patient']
 
 def is_normal(score: int) -> bool:
     """根據評分判斷是否為正常人
@@ -191,7 +191,7 @@ def is_normal(score: int) -> bool:
     Returns:
         bool: 是否為正常人
     """
-    return score == SCORE_THRESHOLDS['normal']
+    return score <= SCORE_THRESHOLDS['normal']
 
 def get_action_type(selection: str) -> Optional[str]:
     """將中文實驗類型映射到英文類別
