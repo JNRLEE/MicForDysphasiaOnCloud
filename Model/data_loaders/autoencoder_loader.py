@@ -8,6 +8,7 @@ import numpy as np
 import logging
 from pathlib import Path
 from collections import Counter
+import yaml
 
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -29,12 +30,21 @@ from Model.base.class_config import (
     is_class_active
 )
 
+def _is_colab() -> bool:
+    """檢查是否在 Google Colab 環境中運行"""
+    try:
+        import google.colab
+        return True
+    except ImportError:
+        return False
+
 class AutoEncoderDataLoader:
     def __init__(self, data_dir: str, original_data_dir: str):
         # 初始化數據加載器
         self.data_dir = Path(data_dir)
         self.original_data_dir = Path(original_data_dir)
         self.logger = logging.getLogger(__name__)
+        self.is_colab = _is_colab()
         
         if not self.data_dir.exists():
             raise ValueError(f"特徵數據目錄不存在: {data_dir}")
@@ -63,20 +73,27 @@ class AutoEncoderDataLoader:
         return info_files[0] if info_files else None
 
     def _convert_path(self, colab_path: str) -> str:
-        """將Colab路徑轉換為本地路徑
-        警告：此函數包含關鍵的路徑轉換邏輯，不要隨意修改，如需更改請先諮詢
+        """將路徑轉換為當前環境的正確路徑
+        
+        Args:
+            colab_path: 原始路徑（通常是 Colab 格式）
+            
+        Returns:
+            str: 轉換後的路徑
         """
-        # 移除可能的前綴
-        path = colab_path.replace('/content/drive/MyDrive/', '')
-        path = path.replace('/content/drive/My Drive/', '')
-        
-        # 構建本地路徑
-        local_path = os.path.join(
-            '/Users/jnrle/Library/CloudStorage/GoogleDrive-jenner.lee.com@gmail.com/My Drive',
-            path
-        )
-        
-        return local_path
+        if not self.is_colab:
+            # 在本地環境中，保持原始路徑不變
+            return colab_path
+            
+        # 在 Colab 環境中，確保路徑格式正確
+        if not colab_path.startswith('/content/drive/MyDrive/'):
+            # 移除可能的前綴
+            path = colab_path.replace('/content/drive/My Drive/', '')
+            path = path.replace('/content/drive/MyDrive/', '')
+            # 添加正確的 Colab 路徑前綴
+            return os.path.join('/content/drive/MyDrive', path)
+            
+        return colab_path
 
     def _find_info_file(self, directory: Path) -> Optional[Path]:
         """在目錄中尋找 info 文件

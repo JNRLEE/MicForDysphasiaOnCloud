@@ -16,6 +16,9 @@ from sklearn.metrics import confusion_matrix
 import logging
 from typing import List, Optional, Tuple, Dict
 import os
+import subprocess
+import matplotlib
+import matplotlib.font_manager as fm
 
 class VisualizationTool:
     """可視化工具類"""
@@ -29,9 +32,42 @@ class VisualizationTool:
         self.save_dir = save_dir
         os.makedirs(save_dir, exist_ok=True)
         
-        # 設置中文字體
-        plt.rcParams['font.sans-serif'] = ['Arial Unicode MS']
-        plt.rcParams['axes.unicode_minus'] = False
+        # 檢查是否在 Colab 環境
+        try:
+            import google.colab
+            is_colab = True
+        except ImportError:
+            is_colab = False
+            
+        if is_colab:
+            # 在 Colab 中安裝中文字型
+            try:
+                subprocess.run(['apt-get', 'update'], check=True)
+                subprocess.run(['apt-get', 'install', '-y', 'fonts-noto-cjk'], check=True)
+                
+                # 重新載入字型快取
+                fm.fontManager.addfont('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc')
+                fm._load_fontmanager()
+                
+                # 設置 matplotlib 使用 Noto Sans CJK JP (包含繁體中文)
+                matplotlib.rc('font', family='Noto Sans CJK JP')
+            except Exception as e:
+                logging.warning(f"安裝字型時出錯: {str(e)}")
+                # 如果安裝失敗，嘗試使用系統預設字型
+                matplotlib.rc('font', family='DejaVu Sans')
+        else:
+            # 本地環境使用系統字型
+            available_fonts = [f.name for f in fm.fontManager.ttflist]
+            for font in ['Arial Unicode MS', 'Noto Sans CJK JP', 'Microsoft JhengHei']:
+                if font in available_fonts:
+                    matplotlib.rc('font', family=font)
+                    break
+            
+        # 確保可以顯示負號
+        matplotlib.rcParams['axes.unicode_minus'] = False
+        
+        # 設定 seaborn 樣式
+        sns.set_style("whitegrid")
         
     def plot_embeddings(
         self,

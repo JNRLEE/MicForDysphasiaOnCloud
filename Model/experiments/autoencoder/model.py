@@ -22,7 +22,8 @@ from tensorflow.keras.layers import (
     MaxPooling1D,
     BatchNormalization,
     Activation,
-    GlobalAveragePooling1D
+    GlobalAveragePooling1D,
+    Flatten
 )
 from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
@@ -36,8 +37,8 @@ class AutoencoderModel:
         Args:
             config: 配置字典，包含模型參數
         """
-        self.time_steps = config.get('time_steps', 512)  # 時間步長，默認512
-        self.feature_dim = config.get('feature_dim', 370) * 2  # 特徵維度，考慮合併後的維度
+        self.time_steps = config.get('time_steps', 100)  # k-means 壓縮後的維度
+        self.feature_dim = config.get('feature_dim', 1)  # 單一特徵維度
         self.learning_rate = config.get('learning_rate', 1e-4)
         self.dropout_rate = config.get('dropout_rate', 0.5)
         self.num_classes = get_num_classes()  # 從 class_config 獲取類別數
@@ -52,19 +53,19 @@ class AutoencoderModel:
         inputs = Input(shape=(self.time_steps, self.feature_dim), name='encoder_input')
         
         # 第一個卷積塊
-        x = Conv1D(64, 3, padding='same', name='conv1')(inputs)
+        x = Conv1D(32, 5, padding='same', name='conv1')(inputs)
         x = BatchNormalization(name='bn1')(x)
         x = Activation('relu', name='relu1')(x)
         x = MaxPooling1D(2, name='pool1')(x)
         
         # 第二個卷積塊
-        x = Conv1D(128, 3, padding='same', name='conv2')(x)
+        x = Conv1D(64, 5, padding='same', name='conv2')(x)
         x = BatchNormalization(name='bn2')(x)
         x = Activation('relu', name='relu2')(x)
         x = MaxPooling1D(2, name='pool2')(x)
         
         # 第三個卷積塊
-        x = Conv1D(256, 3, padding='same', name='conv3')(x)
+        x = Conv1D(128, 5, padding='same', name='conv3')(x)
         x = BatchNormalization(name='bn3')(x)
         x = Activation('relu', name='relu3')(x)
         x = MaxPooling1D(2, name='pool3')(x)
@@ -73,9 +74,9 @@ class AutoencoderModel:
         x = GlobalAveragePooling1D(name='gap')(x)
         
         # 全連接層
-        x = Dense(256, activation='relu', name='dense1')(x)
+        x = Dense(128, activation='relu', name='dense1')(x)
         x = Dropout(self.dropout_rate)(x)
-        x = Dense(128, activation='relu', name='dense2')(x)
+        x = Dense(64, activation='relu', name='dense2')(x)
         x = Dropout(self.dropout_rate)(x)
         
         # 輸出層 - 使用動態類別數

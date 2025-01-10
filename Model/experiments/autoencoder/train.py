@@ -10,11 +10,53 @@ import random
 import os
 import sys
 from collections import Counter
+import yaml
+
+# 設定 matplotlib 字型
+import matplotlib
+import matplotlib.font_manager as fm
+
+# 檢查是否在 Colab 環境
+try:
+    import google.colab
+    is_colab = True
+except ImportError:
+    is_colab = False
+
+if is_colab:
+    # 在 Colab 中安裝中文字型
+    try:
+        import subprocess
+        subprocess.run(['apt-get', 'update'], check=True)
+        subprocess.run(['apt-get', 'install', '-y', 'fonts-noto-cjk'], check=True)
+        
+        # 重新載入字型快取
+        fm.fontManager.addfont('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc')
+        fm._load_fontmanager()
+        
+        # 設定預設字型
+        matplotlib.rc('font', family='Noto Sans CJK JP')
+    except Exception as e:
+        print(f"警告：安裝字型時出錯: {str(e)}")
+        matplotlib.rc('font', family='DejaVu Sans')
+else:
+    # 本地環境使用系統字型
+    available_fonts = [f.name for f in fm.fontManager.ttflist]
+    for font in ['Arial Unicode MS', 'Noto Sans CJK JP', 'Microsoft JhengHei']:
+        if font in available_fonts:
+            matplotlib.rc('font', family=font)
+            break
+
+# 確保可以顯示負號
+matplotlib.rcParams['axes.unicode_minus'] = False
 
 import tensorflow as tf
 import numpy as np
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, TensorBoard
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
+from sklearn.metrics import confusion_matrix
 
 # 添加項目根目錄到 Python 路徑
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -64,9 +106,14 @@ def save_history(history, save_dir: str):
         history: 訓練歷史對象
         save_dir (str): 保存目錄
     """
+    # 將 float32 轉換為 float
+    history_dict = {}
+    for key, value in history.history.items():
+        history_dict[key] = [float(v) for v in value]
+    
     history_file = os.path.join(save_dir, 'training_history.json')
     with open(history_file, 'w') as f:
-        json.dump(history.history, f, indent=2)
+        json.dump(history_dict, f, indent=2)
 
 def print_class_config():
     """打印當前使用的類別配置"""
@@ -293,11 +340,6 @@ def setup_callbacks(save_dir: str) -> List[tf.keras.callbacks.Callback]:
             monitor='val_loss',
             mode='min'
         ),
-        tf.keras.callbacks.EarlyStopping(
-            monitor='val_loss',
-            patience=5,
-            restore_best_weights=True
-        ),
         tf.keras.callbacks.TensorBoard(
             log_dir=os.path.join(save_dir, 'logs'),
             histogram_freq=1
@@ -305,71 +347,142 @@ def setup_callbacks(save_dir: str) -> List[tf.keras.callbacks.Callback]:
     ]
     return callbacks
 
-def create_model(input_shape: Tuple[int, ...]) -> tf.keras.Model:
-    """創建模型
-
-    Args:
-        input_shape (Tuple[int, ...]): 輸入形狀
-
-    Returns:
-        tf.keras.Model: 創建的模型
+def kmeans_unify_features(
+    raw_features: np.ndarray,
+    n_clusters: int = 30
+) -> np.ndarray:
     """
-    config = {
-        'time_steps': input_shape[0],
-        'feature_dim': input_shape[1] // 2,  # 因為我們的特徵是合併後的，所以除以2
-        'learning_rate': 0.001,
-        'dropout_rate': 0.5
-    }
+    此函式透過 k-means 將 [batch, 512, variable_length] 的資料統一處理為 [batch, n_clusters] 的二維陣列。
+    步驟：
+    1. 將每個樣本的 shape 由 [1, 512, variable_length] 轉換成 [variable_length, 512]。
+    2. 對時間序列進行標準化，然後使用 k-means 將其分成 n_clusters 群。
+    3. 將每個樣本的 cluster label 統計成直方圖，以取得固定長度表示。
     
-    model = AutoencoderModel(config)
-    model.build()
-    return model.model
-
-def evaluate_model(model: tf.keras.Model, test_data: Dict, save_dir: str):
-    """評估模型
-
     Args:
-        model (tf.keras.Model): 訓練好的模型
-        test_data (Dict): 測試數據
-        save_dir (str): 保存目錄
+        raw_features (np.ndarray): 原始三維特徵，假設 shape=(batch_size, 512, variable_length)
+        n_clusters (int): k-means 的 cluster 數量
+        
+    Returns:
+        np.ndarray: 統合後的二維特徵陣列，shape=(batch_size, n_clusters)
     """
-    # 評估模型
+    processed_list = []
+    
+    for i in range(len(raw_features)):
+        sample = raw_features[i]  # shape=(512, variable_length)
+        
+        # 轉換維度，得到 shape=(variable_length, 512)
+        sample_transposed = sample.T
+        
+        # 標準化
+        scaler = StandardScaler()
+        normalized_sample = scaler.fit_transform(sample_transposed)
+        
+        # k-means 聚類
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+        kmeans.fit(normalized_sample)
+        labels = kmeans.labels_
+        
+        # 將 cluster label 轉為直方圖，取得 shape=(n_clusters,)
+        histogram, _ = np.histogram(labels, bins=n_clusters, range=(0, n_clusters))
+        
+        processed_list.append(histogram)
+    
+    # 將所有結果堆疊成 array
+    output_array = np.array(processed_list)  # shape=(batch_size, n_clusters)
+    return output_array
+
+def create_model(input_shape: Tuple[int, ...], num_classes: int) -> tf.keras.Model:
+    """創建 CNN 分類器模型
+    Args:
+        input_shape: 輸入特徵的形狀
+        num_classes: 分類類別數量
+    Returns:
+        編譯好的 Keras 模型
+    """
+    inputs = tf.keras.layers.Input(shape=input_shape, name='encoder_input')
+    
+    # 第一個卷積塊
+    x = tf.keras.layers.Conv1D(64, 5, padding='same', name='conv1')(inputs)
+    x = tf.keras.layers.BatchNormalization(name='bn1')(x)
+    x = tf.keras.layers.Activation('relu', name='relu1')(x)
+    x = tf.keras.layers.MaxPooling1D(2, name='pool1')(x)
+    x = tf.keras.layers.Dropout(0.2)(x)
+    
+    # 第二個卷積塊
+    x = tf.keras.layers.Conv1D(128, 5, padding='same', name='conv2')(x)
+    x = tf.keras.layers.BatchNormalization(name='bn2')(x)
+    x = tf.keras.layers.Activation('relu', name='relu2')(x)
+    x = tf.keras.layers.MaxPooling1D(2, name='pool2')(x)
+    x = tf.keras.layers.Dropout(0.3)(x)
+    
+    # 第三個卷積塊
+    x = tf.keras.layers.Conv1D(256, 5, padding='same', name='conv3')(x)
+    x = tf.keras.layers.BatchNormalization(name='bn3')(x)
+    x = tf.keras.layers.Activation('relu', name='relu3')(x)
+    x = tf.keras.layers.MaxPooling1D(2, name='pool3')(x)
+    x = tf.keras.layers.Dropout(0.4)(x)
+    
+    # 全局平均池化
+    x = tf.keras.layers.GlobalAveragePooling1D(name='gap')(x)
+    
+    # 全連接層
+    x = tf.keras.layers.Dense(256, activation='relu', name='dense1')(x)
+    x = tf.keras.layers.Dropout(0.5)(x)
+    x = tf.keras.layers.Dense(128, activation='relu', name='dense2')(x)
+    x = tf.keras.layers.Dropout(0.5)(x)
+    outputs = tf.keras.layers.Dense(num_classes, activation='softmax', name='classifier_output')(x)
+    
+    model = tf.keras.models.Model(inputs=inputs, outputs=outputs, name='cnn_classifier')
+    
+    # 使用 Adam 優化器，並設定較小的學習率
+    optimizer = tf.keras.optimizers.Adam(learning_rate=0.0001)
+    model.compile(optimizer=optimizer,
+                 loss='categorical_crossentropy',
+                 metrics=['accuracy'])
+    
+    return model
+
+def evaluate_model(model, test_data, save_dir, logger):
+    """評估模型性能
+    Args:
+        model: 訓練好的模型
+        test_data: 測試數據字典，包含 'encoder_input' 和 'classifier_output'
+        save_dir: 保存目錄
+        logger: 日誌記錄器
+    """
+    # 計算測試集性能
     test_loss, test_accuracy = model.evaluate(
         test_data['encoder_input'],
         test_data['classifier_output']
     )
+    logger.info(f'測試集準確率: {test_accuracy:.4f}')
     
     # 獲取預測結果
-    y_pred_proba = model.predict(test_data['encoder_input'])
-    y_pred = np.argmax(y_pred_proba, axis=1)
+    y_pred = model.predict(test_data['encoder_input'])
+    y_pred_classes = np.argmax(y_pred, axis=1)
     y_true = np.argmax(test_data['classifier_output'], axis=1)
     
     # 獲取類別名稱
-    label_names = get_active_class_names()
+    class_names = get_active_class_names()
     
-    # 創建可視化工具並生成混淆矩陣
-    viz_dir = os.path.join(save_dir, 'visualizations')
-    os.makedirs(viz_dir, exist_ok=True)
-    viz_tool = VisualizationTool(save_dir=viz_dir)
-    viz_tool.plot_confusion_matrix(
-        y_true=y_true,
-        y_pred=y_pred,
-        label_names=label_names,
-        filename='confusion_matrix.png'
-    )
+    # 計算混淆矩陣
+    confusion_mat = confusion_matrix(y_true, y_pred_classes)
     
-    # 打印混淆矩陣
-    print_confusion_matrix_text(y_true, y_pred, label_names)
+    # 打印混淆矩陣（純文字格式）
+    print('\n=== 混淆矩陣 ===')
+    # 打印標題行
+    print(f"{'':25}", end='')
+    for name in class_names:
+        print(f"{name:15}", end=' ')
+    print('\n')
     
-    # 保存評估結果
-    evaluation_results = {
-        'test_loss': float(test_loss),
-        'test_accuracy': float(test_accuracy)
-    }
-    
-    evaluation_file = os.path.join(save_dir, 'evaluation_results.json')
-    with open(evaluation_file, 'w') as f:
-        json.dump(evaluation_results, f, indent=2)
+    # 打印每一行
+    for i, (row, class_name) in enumerate(zip(confusion_mat, class_names)):
+        print(f"{class_name:25}", end='')
+        for val in row:
+            print(f"{val:15}", end=' ')
+        print()
+    print('==================\n')
 
 def train_model(
     model: AutoencoderModel,
@@ -406,7 +519,7 @@ def train_model(
             val_data['classifier_output']
         ),
         batch_size=config.get('batch_size', 32),
-        epochs=2,  # 簡化為2個epoch
+        epochs=config.get('training', {}).get('epochs', 100),  # 從配置文件讀取 epochs
         callbacks=callbacks,
         verbose=1
     )
@@ -445,6 +558,11 @@ def main():
     logger = setup_logger()
     
     try:
+        # 讀取配置文件
+        config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+        
         # 打印類別配置
         print_class_config()
         
@@ -456,14 +574,14 @@ def main():
         logger.info(f"文件名數量: {len(filenames)}")
         logger.info(f"受試者數量: {len(set(patient_ids))}")
 
-        # 標準化特徵維度
+        # 使用 k-means 壓縮特徵
         logger.info(f"原始特徵形狀: {features.shape}")
-        norm_features = normalize_feature_dim(features, target_dim=740)
-        logger.info(f"處理後的特徵形狀: {norm_features.shape}")
+        compressed_features = kmeans_unify_features(features, n_clusters=30)
+        logger.info(f"壓縮後的特徵形狀: {compressed_features.shape}")
         
         # 準備數據集
         (train_features, train_labels), (val_features, val_labels), (test_features, test_labels) = prepare_data(
-            norm_features,
+            compressed_features,
             labels,
             filenames,
             patient_ids,
@@ -476,22 +594,34 @@ def main():
         val_labels_onehot = tf.keras.utils.to_categorical(val_labels, num_classes=num_classes)
         test_labels_onehot = tf.keras.utils.to_categorical(test_labels, num_classes=num_classes)
 
+        # 為 Conv1D 擴展維度
+        train_features = np.expand_dims(train_features, axis=-1)  # shape=(samples, 30, 1)
+        val_features = np.expand_dims(val_features, axis=-1)
+        test_features = np.expand_dims(test_features, axis=-1)
+
         # 設置保存目錄
         save_dir = setup_save_dir()
         
         # 創建和編譯模型
-        model = create_model(input_shape=train_features.shape[1:])
+        model = create_model(
+            input_shape=(compressed_features.shape[1], 1),  # (30, 1)
+            num_classes=num_classes
+        )
         
         # 設置回調函數
         callbacks = setup_callbacks(save_dir)
+        
+        # 從配置文件獲取訓練參數
+        epochs = config['training']['epochs']
+        batch_size = config['training']['batch_size']
         
         # 訓練模型
         history = model.fit(
             x=train_features,
             y=train_labels_onehot,
             validation_data=(val_features, val_labels_onehot),
-            epochs=2,
-            batch_size=32,
+            epochs=epochs,
+            batch_size=batch_size,
             callbacks=callbacks
         )
         
@@ -500,7 +630,7 @@ def main():
             'encoder_input': test_features,
             'classifier_output': test_labels_onehot
         }
-        evaluate_model(model, test_data, save_dir)
+        evaluate_model(model, test_data, save_dir, logger)
         
         # 保存訓練歷史
         save_history(history, save_dir)
