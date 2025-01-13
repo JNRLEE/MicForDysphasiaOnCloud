@@ -30,20 +30,38 @@ from Model.base.class_config import (
     is_class_active
 )
 
+# 讀取配置文件
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), '../experiments/WavFeatureCNN/config.yaml')
+
 def _is_colab() -> bool:
     """檢查是否在 Google Colab 環境中運行"""
     try:
         import google.colab
         return True
-    except ImportError:
+    except:
         return False
 
 class AutoEncoderDataLoader:
     def __init__(self, data_dir: str, original_data_dir: str):
-        # 初始化數據加載器
+        """初始化數據加載器
+        
+        Args:
+            data_dir: 特徵數據目錄
+            original_data_dir: 原始數據目錄
+        """
         self.data_dir = Path(data_dir)
         self.original_data_dir = Path(original_data_dir)
         self.logger = logging.getLogger(__name__)
+        
+        # 讀取配置文件
+        try:
+            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+                self.config = yaml.safe_load(f)
+            self.target_dim = self.config['feature_processing']['target_dim']
+        except Exception as e:
+            self.logger.warning(f"無法讀取配置文件，使用默認特徵維度 2000: {str(e)}")
+            self.target_dim = 2000
+
         self.is_colab = _is_colab()
         
         if not self.data_dir.exists():
@@ -156,37 +174,35 @@ class AutoEncoderDataLoader:
             return {}
 
     def _standardize_features(self, features: np.ndarray, target_shape: Tuple[int, ...]) -> np.ndarray:
-        """標準化特徵形狀到目標形狀
+        """標準化特徵維度
         
         Args:
-            features: 輸入特徵，形狀為 (batch_size, 512, feature_dim)
-            target_shape: 目標形狀，形狀為 (512, feature_dim)
+            features: 輸入特徵
+            target_shape: 目標形狀
             
         Returns:
-            標準化後的特徵，形狀為 (batch_size, 512, target_feature_dim)
+            標準化後的特徵
         """
-        # 獲取當前和目標維度
-        batch_size = features.shape[0]
-        _, target_features = target_shape
+        if features is None:
+            return None
         
-        # 檢查時間步長是否為512
-        if features.shape[1] != 512 or target_shape[0] != 512:
-            raise ValueError(f"時間步長必須為512: features={features.shape}, target={target_shape}")
+        # 檢查並調整時間步長
+        if len(features.shape) == 2:
+            features = features.reshape(1, *features.shape)
         
-        # 創建新的特徵數組
-        standardized = np.zeros((batch_size, 512, target_features), dtype=features.dtype)
+        # 填充或截斷到目標維度
+        batch_size, time_steps, feature_dim = features.shape
         
-        # 對每個批次進行處理
-        for i in range(batch_size):
-            # 複製有效數據
-            feat_size = min(features.shape[2], target_features)
-            standardized[i, :, :feat_size] = features[i, :, :feat_size]
-            
-            # 記錄詳細的形狀信息
-            if i == 0:  # 只記錄第一個樣本的信息，避免日誌過多
-                self.logger.debug(f"Sample {i}: 原始形狀 {features[i].shape} -> 目標形狀 {(512, target_features)}")
+        if feature_dim > self.target_dim:
+            # 如果特徵維度超過目標維度，從中間截取
+            start = (feature_dim - self.target_dim) // 2
+            features = features[:, :, start:start + self.target_dim]
+        else:
+            # 如果特徵維度小於目標維度，用0填充
+            pad_width = ((0, 0), (0, 0), (0, self.target_dim - feature_dim))
+            features = np.pad(features, pad_width, mode='constant', constant_values=0)
         
-        return standardized
+        return features
 
     def _extract_features(self, feature_file: Path) -> Tuple[np.ndarray, np.ndarray, str]:
         """從特徵文件中提取特徵、標記和文件名
@@ -357,16 +373,16 @@ class AutoEncoderDataLoader:
                     self.logger.warning(f"特徵形狀不正確: {features.shape}")
                     continue
                 
-                # 填充或截斷到固定長度20000
+                # 填充或截斷到固定長度2000
                 batch_size, time_steps, feature_dim = features.shape
-                desired_dim = 20000
+                desired_dim = 2000
                 
                 if feature_dim > desired_dim:
-                    # 如果特徵維度超過20000，從中間截取
+                    # 如果特徵維度超過2000，從中間截取
                     start = (feature_dim - desired_dim) // 2
                     features = features[:, :, start:start + desired_dim]
                 else:
-                    # 如果特徵維度小於20000，用0填充
+                    # 如果特徵維度小於2000，用0填充
                     pad_width = ((0, 0), (0, 0), (0, desired_dim - feature_dim))
                     features = np.pad(features, pad_width, mode='constant', constant_values=0)
                 
@@ -453,41 +469,40 @@ class AutoEncoderDataLoader:
             raise ValueError(f"處理實驗目錄失敗 {exp_dir}: {str(e)}")
 
     def _combine_features(self, features: np.ndarray, tokens: np.ndarray) -> np.ndarray:
-        """合併特徵和標記數據，並填充到固定長度20000
-
+        """合併特徵和標記數據，並填充到固定長度
+        
         Args:
             features: shape (batch, 512, feature_dim)
             tokens: shape (batch, 512, token_dim) 或 (batch, 1, token_dim)
             
         Returns:
-            combined: shape (batch, 512, 20000)
+            combined: shape (batch, 512, target_dim)
         """
         if features is None or tokens is None:
             return features if features is not None else tokens
-
+        
         # 確保 tokens 的時間步長與 features 相同
         if tokens.shape[1] == 1:
             tokens = np.repeat(tokens, features.shape[1], axis=1)
-
+        
         # 檢查形狀是否匹配
         if features.shape[0] != tokens.shape[0] or features.shape[1] != tokens.shape[1]:
             raise ValueError(f"特徵和標記的形狀不匹配: features={features.shape}, tokens={tokens.shape}")
-
+        
         # 在特徵維度上合併
         combined = np.concatenate([features, tokens], axis=-1)
-
-        # 填充或截斷到固定長度20000
+        
+        # 填充或截斷到固定長度
         batch_size, time_steps, feature_dim = combined.shape
-        desired_dim = 20000
-
-        if feature_dim > desired_dim:
-            # 如果特徵維度超過20000，從中間截取
-            start = (feature_dim - desired_dim) // 2
-            combined = combined[:, :, start:start + desired_dim]
+        
+        if feature_dim > self.target_dim:
+            # 如果特徵維度超過目標維度，從中間截取
+            start = (feature_dim - self.target_dim) // 2
+            combined = combined[:, :, start:start + self.target_dim]
         else:
-            # 如果特徵維度小於20000，用0填充
-            pad_width = ((0, 0), (0, 0), (0, desired_dim - feature_dim))
+            # 如果特徵維度小於目標維度，用0填充
+            pad_width = ((0, 0), (0, 0), (0, self.target_dim - feature_dim))
             combined = np.pad(combined, pad_width, mode='constant', constant_values=0)
-
+        
         self.logger.info(f"合併後的特徵形狀: {combined.shape}")
         return combined

@@ -1,64 +1,26 @@
 """
 此腳本用於訓練吞嚥聲音分類模型
 主要功能：
-1. 加載並預處理吞嚥聲音特徵數據
-2. 將特徵維度標準化為 5000
-3. 使用滑動窗口分割數據以學習時間關係
-4. 訓練一維卷積神經網絡進行分類
+1. 加載和預處理數據
+2. 將特徵維度標準化為配置文件中指定的維度
+3. 訓練模型並保存結果
 """
 
+import os
+import sys
 import logging
 from pathlib import Path
 from typing import Tuple, Dict, List, Optional
 import json
 import random
-import os
-import sys
-from collections import Counter
 import yaml
-
-# 設定 matplotlib 字型
-import matplotlib
-import matplotlib.font_manager as fm
-
-# 檢查是否在 Colab 環境
-try:
-    import google.colab
-    is_colab = True
-except ImportError:
-    is_colab = False
-
-if is_colab:
-    # 在 Colab 中安裝中文字型
-    try:
-        import subprocess
-        subprocess.run(['apt-get', 'update'], check=True)
-        subprocess.run(['apt-get', 'install', '-y', 'fonts-noto-cjk'], check=True)
-        
-        # 重新載入字型快取
-        fm.fontManager.addfont('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc')
-        fm._load_fontmanager()
-        
-        # 設定預設字型
-        matplotlib.rc('font', family='Noto Sans CJK JP')
-    except Exception as e:
-        print(f"警告：安裝字型時出錯: {str(e)}")
-        matplotlib.rc('font', family='DejaVu Sans')
-else:
-    # 本地環境使用系統字型
-    available_fonts = [f.name for f in fm.fontManager.ttflist]
-    for font in ['Arial Unicode MS', 'Noto Sans CJK JP', 'Microsoft JhengHei']:
-        if font in available_fonts:
-            matplotlib.rc('font', family=font)
-            break
-
-# 確保可以顯示負號
-matplotlib.rcParams['axes.unicode_minus'] = False
+from collections import Counter
 
 import tensorflow as tf
 import numpy as np
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, TensorBoard
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import confusion_matrix
 
 # 添加項目根目錄到 Python 路徑
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -178,12 +140,12 @@ def print_confusion_matrix_text(y_true: np.ndarray, y_pred: np.ndarray, label_na
         print()
     print("==================\n")
 
-def normalize_feature_dim(features: np.ndarray, target_dim: int = 5000) -> np.ndarray:
-    """標準化特徵維度到 5000
+def normalize_feature_dim(features: np.ndarray, config: Dict) -> np.ndarray:
+    """標準化特徵維度到配置文件指定的維度
     
     Args:
         features: 原始特徵 [batch_size, time_steps, feature_dim]
-        target_dim: 目標特徵維度，默認為 5000
+        config: 配置字典，包含目標維度設定
         
     Returns:
         normalized_features: 標準化後的特徵
@@ -193,6 +155,7 @@ def normalize_feature_dim(features: np.ndarray, target_dim: int = 5000) -> np.nd
         
     original_shape = features.shape
     current_dim = original_shape[-1]
+    target_dim = config['feature_processing']['target_dim']
     
     if current_dim > target_dim:
         # 截斷較長的特徵
@@ -381,7 +344,7 @@ def evaluate_model(model, test_data, save_dir, logger):
     class_names = get_active_class_names()
     
     # 計算混淆矩陣
-    confusion_mat = confusion_matrix(y_true, y_pred_classes)
+    cm = confusion_matrix(y_true, y_pred_classes)
     
     # 打印混淆矩陣（純文字格式）
     print('\n=== 混淆矩陣 ===')
@@ -392,12 +355,28 @@ def evaluate_model(model, test_data, save_dir, logger):
     print('\n')
     
     # 打印每一行
-    for i, (row, class_name) in enumerate(zip(confusion_mat, class_names)):
+    for i, (row, class_name) in enumerate(zip(cm, class_names)):
         print(f"{class_name:25}", end='')
         for val in row:
             print(f"{val:15}", end=' ')
         print()
     print('==================\n')
+    
+    # 保存混淆矩陣到文件
+    confusion_matrix_file = os.path.join(save_dir, 'confusion_matrix.txt')
+    with open(confusion_matrix_file, 'w', encoding='utf-8') as f:
+        f.write('=== 混淆矩陣 ===\n')
+        f.write(f"{'':25}")
+        for name in class_names:
+            f.write(f"{name:15} ")
+        f.write('\n\n')
+        
+        for i, (row, class_name) in enumerate(zip(cm, class_names)):
+            f.write(f"{class_name:25}")
+            for val in row:
+                f.write(f"{val:15} ")
+            f.write('\n')
+        f.write('==================\n')
 
 def train_model(
     model: AutoencoderModel,
@@ -487,7 +466,11 @@ def main():
         print_class_config()
         
         # 加載數據
-        features, labels, filenames, patient_ids = load_data()
+        data_loader = AutoEncoderDataLoader(
+            data_dir=config['data_dir'],
+            original_data_dir=config['original_data_dir']
+        )
+        features, labels, filenames, patient_ids = data_loader.load_data()
         logger.info(f"加載了 {len(features)} 個樣本")
         logger.info(f"合併後的特徵形狀: {features.shape}")
         logger.info(f"標籤形狀: {labels.shape}")

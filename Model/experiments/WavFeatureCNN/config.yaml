@@ -1,5 +1,12 @@
 # 自編碼器實驗配置
 
+# 特徵處理配置
+feature_processing:
+  target_dim: 2000    # 目標特徵維度
+  channels: 512       # 特徵通道數
+  window_size: 129    # 時間窗口大小
+  stride: 64         # 步長，確保50%重疊
+
 # 數據目錄配置
 data_dir: "/content/drive/MyDrive/MicforDysphagia/WavData/AutoEncoderData"
 original_data_dir: "/content/drive/MyDrive/MicforDysphagia/WavData/OriginalData"
