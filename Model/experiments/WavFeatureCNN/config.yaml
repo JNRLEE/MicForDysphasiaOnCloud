@@ -6,21 +6,22 @@ original_data_dir: "/content/drive/MyDrive/MicforDysphagia/WavData/OriginalData"
 
 # 音頻處理配置
 audio:
-  sr: 16000
+  sr: 16000  # 採樣率
   frame_size: 256
   overlap: 128
   fft_size: 256
-  seq_num: 512
+  seq_num: 129  # 窗口大小，對應 example.py
+  stride: 64    # 步長，確保50%重疊
   batch_proc_size: 10
 
 # 模型結構配置
 model:
-  time_steps: 512  # 固定時間步長
-  feature_dim: 20000  # 特徵維度固定為20000
-  latent_dim: 512  # 潛在空間的維度
+  channels: 512      # 特徵通道數
+  window_size: 129   # 時間窗口大小
+  latent_dim: 512    # 潛在空間的維度
   filters: [64, 128, 256, 512]  # 每層卷積的濾波器數量
-  kernel_sizes: [7, 5, 3, 3]  # 每層卷積的核大小
-  pool_sizes: [2, 2, 2, 2]  # 每層池化的大小
+  kernel_sizes: [7, 5, 3, 3]    # 每層卷積的核大小
+  pool_sizes: [2, 2, 2, 2]      # 每層池化的大小
   dropout_rate: 0.5
   learning_rate: 0.001
   use_batch_norm: true  # 是否使用批量標準化

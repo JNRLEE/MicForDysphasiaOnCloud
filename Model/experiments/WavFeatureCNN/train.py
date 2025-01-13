@@ -1,5 +1,10 @@
 """
-訓練自動編碼器模型的主腳本
+此腳本用於訓練吞嚥聲音分類模型
+主要功能：
+1. 加載並預處理吞嚥聲音特徵數據
+2. 將特徵維度標準化為 5000
+3. 使用滑動窗口分割數據以學習時間關係
+4. 訓練一維卷積神經網絡進行分類
 """
 
 import logging
@@ -53,10 +58,7 @@ matplotlib.rcParams['axes.unicode_minus'] = False
 import tensorflow as tf
 import numpy as np
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, TensorBoard
-from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
-from sklearn.metrics import confusion_matrix
 
 # 添加項目根目錄到 Python 路徑
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -176,12 +178,13 @@ def print_confusion_matrix_text(y_true: np.ndarray, y_pred: np.ndarray, label_na
         print()
     print("==================\n")
 
-def normalize_feature_dim(features: np.ndarray, target_dim: int = 370) -> np.ndarray:
-    """標準化特徵維度
+def normalize_feature_dim(features: np.ndarray, target_dim: int = 5000) -> np.ndarray:
+    """標準化特徵維度到 5000
     
     Args:
         features: 原始特徵 [batch_size, time_steps, feature_dim]
-        target_dim: 目標特徵維度
+        target_dim: 目標特徵維度，默認為 5000
+        
     Returns:
         normalized_features: 標準化後的特徵
     """
@@ -192,12 +195,8 @@ def normalize_feature_dim(features: np.ndarray, target_dim: int = 370) -> np.nda
     current_dim = original_shape[-1]
     
     if current_dim > target_dim:
-        # 使用PCA降維
-        data_2d = features.reshape(-1, current_dim)
-        pca = PCA(n_components=target_dim)
-        data_reduced = pca.fit_transform(data_2d)
-        return data_reduced.reshape(original_shape[0], original_shape[1], target_dim)
-    
+        # 截斷較長的特徵
+        return features[..., :target_dim]
     elif current_dim < target_dim:
         # 使用零填充
         padded = np.zeros((original_shape[0], original_shape[1], target_dim))
@@ -206,53 +205,44 @@ def normalize_feature_dim(features: np.ndarray, target_dim: int = 370) -> np.nda
         
     return features
 
-def split_subjects(
-    patient_ids: List[str],
-    train_ratio: float = 0.7,
-    val_ratio: float = 0.15,
-    random_seed: int = 42
-) -> Tuple[List[str], List[str], List[str]]:
-    """根據受試者ID分割數據
+def sliding_window(data: np.ndarray, window_size: int = 129, stride: int = 64) -> np.ndarray:
+    """使用滑動窗口分割數據
     
     Args:
-        patient_ids: 受試者ID列表
-        train_ratio: 訓練集比例
-        val_ratio: 驗證集比例
-        random_seed: 隨機種子
+        data: 輸入數據，形狀為 [samples, channels, sequence_length]
+        window_size: 窗口大小，默認為 129 (對應 example.py 中的 seq_num)
+        stride: 步長，默認為 64 (window_size//2，確保50%重疊)
         
     Returns:
-        (train_subjects, val_subjects, test_subjects): 分割後的受試者ID列表
+        windows: 分割後的窗口，形狀為 [num_windows, channels, window_size]
     """
-    # 獲取唯一的受試者ID
-    unique_subjects = list(set(patient_ids))
+    # 確保數據維度正確
+    if len(data.shape) != 3:
+        raise ValueError(f"輸入數據維度應為3，當前維度為: {len(data.shape)}")
     
-    # 確保至少有3個受試者
-    if len(unique_subjects) < 3:
-        raise ValueError(f"受試者數量（{len(unique_subjects)}）不足，無法進行分割。至少需要3個受試者。")
+    samples, channels, sequence_length = data.shape
     
-    # 設置隨機種子
-    np.random.seed(random_seed)
-    np.random.shuffle(unique_subjects)
+    # 如果序列長度小於窗口大小，進行填充
+    if sequence_length < window_size:
+        pad_size = window_size - sequence_length
+        data = np.pad(data, ((0, 0), (0, 0), (0, pad_size)), mode='constant')
+        sequence_length = window_size
     
-    # 計算分割點，確保每個子集至少有一個受試者
-    n_subjects = len(unique_subjects)
-    n_train = max(1, int(n_subjects * train_ratio))
-    n_val = max(1, int(n_subjects * val_ratio))
+    # 計算窗口數量
+    num_windows = (sequence_length - window_size) // stride + 1
     
-    # 調整分割以確保測試集至少有一個受試者
-    if n_train + n_val >= n_subjects:
-        if n_subjects >= 3:
-            n_train = n_subjects - 2
-            n_val = 1
-        else:
-            raise ValueError(f"受試者數量（{n_subjects}）不足，無法保證每個個子集至少有一個受試者")
+    # 創建結果數組
+    windows = np.zeros((samples * num_windows, channels, window_size))
     
-    # 分割受試者
-    train_subjects = unique_subjects[:n_train]
-    val_subjects = unique_subjects[n_train:n_train+n_val]
-    test_subjects = unique_subjects[n_train+n_val:]
+    # 對每個樣本進行滑動窗口分割
+    for i in range(samples):
+        for j in range(num_windows):
+            start_idx = j * stride
+            end_idx = start_idx + window_size
+            # 注意這裡是在 sequence_length 維度上進行切分
+            windows[i * num_windows + j] = data[i, :, start_idx:end_idx]
     
-    return train_subjects, val_subjects, test_subjects
+    return windows
 
 def prepare_data(
     features: np.ndarray,
@@ -262,17 +252,16 @@ def prepare_data(
     logger: Optional[logging.Logger] = None
 ) -> Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray]]:
     """準備訓練、驗證和測試數據
-
+    
     Args:
-        features (np.ndarray): 特徵數據
-        labels (np.ndarray): 標籤數據
-        filenames (List[str]): 文件名列表
-        patient_ids (List[str]): 受試者ID列表
-        logger (Optional[logging.Logger], optional): 日誌記錄器. Defaults to None.
-
+        features: 特徵數據，形狀為 [samples, channels, sequence_length]
+        labels: 標籤數據
+        filenames: 文件名列表
+        patient_ids: 受試者ID列表
+        logger: 日誌記錄器
+        
     Returns:
-        Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray]]:
-            訓練數據、驗證數據和測試數據的元組，每個元組包含特徵和標籤
+        訓練集、驗證集和測試集的元組，每個元組包含特徵和標籤
     """
     # 檢查數據有效性
     if len(features) == 0:
@@ -283,6 +272,20 @@ def prepare_data(
         raise ValueError("沒有有效的文件名")
     if len(patient_ids) == 0:
         raise ValueError("沒有有效的受試者ID")
+    
+    if logger:
+        logger.info(f"原始特徵形狀: {features.shape}")
+    
+    # 使用滑動窗口分割數據
+    window_size = 129  # 對應 example.py 中的 seq_num
+    stride = 64       # window_size//2，確保50%重疊
+    windows = sliding_window(features, window_size, stride)
+    if logger:
+        logger.info(f"滑動窗口分割後的特徵形狀: {windows.shape}")
+    
+    # 調整標籤以匹配窗口數量
+    num_windows_per_sample = (features.shape[2] - window_size) // stride + 1
+    window_labels = np.repeat(labels, num_windows_per_sample)
     
     # 獲取唯一的受試者ID
     unique_patients = list(set(patient_ids))
@@ -301,22 +304,33 @@ def prepare_data(
     test_patients = unique_patients[train_size + val_size:]
     
     # 根據受試者ID分割數據
-    train_indices = [i for i, pid in enumerate(patient_ids) if pid in train_patients]
-    val_indices = [i for i, pid in enumerate(patient_ids) if pid in val_patients]
-    test_indices = [i for i, pid in enumerate(patient_ids) if pid in test_patients]
+    train_indices = []
+    val_indices = []
+    test_indices = []
+    
+    for i, pid in enumerate(patient_ids):
+        start_idx = i * num_windows_per_sample
+        end_idx = (i + 1) * num_windows_per_sample
+        if pid in train_patients:
+            train_indices.extend(range(start_idx, end_idx))
+        elif pid in val_patients:
+            val_indices.extend(range(start_idx, end_idx))
+        else:
+            test_indices.extend(range(start_idx, end_idx))
     
     # 創建數據集
-    train_features = features[train_indices]
-    train_labels = labels[train_indices]
-    val_features = features[val_indices]
-    val_labels = labels[val_indices]
-    test_features = features[test_indices]
-    test_labels = labels[test_indices]
+    train_features = windows[train_indices]
+    train_labels = window_labels[train_indices]
+    val_features = windows[val_indices]
+    val_labels = window_labels[val_indices]
+    test_features = windows[test_indices]
+    test_labels = window_labels[test_indices]
     
     # 打印分割信息
-    print_split_info("訓練", train_features, train_labels, [patient_ids[i] for i in train_indices])
-    print_split_info("驗證", val_features, val_labels, [patient_ids[i] for i in val_indices])
-    print_split_info("測試", test_features, test_labels, [patient_ids[i] for i in test_indices])
+    if logger:
+        logger.info(f"訓練集形狀: {train_features.shape}, 標籤形狀: {train_labels.shape}")
+        logger.info(f"驗證集形狀: {val_features.shape}, 標籤形狀: {val_labels.shape}")
+        logger.info(f"測試集形狀: {test_features.shape}, 標籤形狀: {test_labels.shape}")
     
     return (train_features, train_labels), (val_features, val_labels), (test_features, test_labels)
 
@@ -342,99 +356,6 @@ def setup_callbacks(save_dir: str) -> List[tf.keras.callbacks.Callback]:
         )
     ]
     return callbacks
-
-def kmeans_unify_features(
-    raw_features: np.ndarray,
-    n_clusters: int = 30
-) -> np.ndarray:
-    """
-    此函式透過 k-means 將合併後的特徵資料統一處理為固定長度的表示。
-    步驟：
-    1. 將每個樣本的 shape 由 [1, 512, combined_dim] 轉換成 [512, combined_dim]。
-    2. 對時間序列進行標準化。
-    3. 使用 k-means 將其分成 n_clusters 群。
-    4. 將每個樣本的 cluster label 統計成直方圖。
-    
-    Args:
-        raw_features (np.ndarray): 合併後的特徵，shape=(batch_size, 512, combined_dim)
-        n_clusters (int): k-means 的 cluster 數量
-        
-    Returns:
-        np.ndarray: 統合後的二維特徵陣列，shape=(batch_size, n_clusters)
-    """
-    processed_list = []
-    
-    for i in range(len(raw_features)):
-        sample = raw_features[i]  # shape=(512, combined_dim)
-        
-        # 標準化
-        scaler = StandardScaler()
-        normalized_sample = scaler.fit_transform(sample)
-        
-        # k-means 聚類
-        kmeans = KMeans(n_clusters=n_clusters, random_state=42)
-        kmeans.fit(normalized_sample)
-        labels = kmeans.labels_
-        
-        # 將 cluster label 轉為直方圖，取得 shape=(n_clusters,)
-        histogram, _ = np.histogram(labels, bins=n_clusters, range=(0, n_clusters))
-        
-        processed_list.append(histogram)
-    
-    # 將所有結果堆疊成 array
-    output_array = np.array(processed_list)  # shape=(batch_size, n_clusters)
-    return output_array
-
-def create_model(input_shape: Tuple[int, ...], num_classes: int) -> tf.keras.Model:
-    """創建 CNN 分類器模型
-    Args:
-        input_shape: 輸入特徵的形狀
-        num_classes: 分類類別數量
-    Returns:
-        編譯好的 Keras 模型
-    """
-    inputs = tf.keras.layers.Input(shape=input_shape, name='encoder_input')
-    
-    # 第一個卷積塊
-    x = tf.keras.layers.Conv1D(64, 5, padding='same', name='conv1')(inputs)
-    x = tf.keras.layers.BatchNormalization(name='bn1')(x)
-    x = tf.keras.layers.Activation('relu', name='relu1')(x)
-    x = tf.keras.layers.MaxPooling1D(2, name='pool1')(x)
-    x = tf.keras.layers.Dropout(0.2)(x)
-    
-    # 第二個卷積塊
-    x = tf.keras.layers.Conv1D(128, 5, padding='same', name='conv2')(x)
-    x = tf.keras.layers.BatchNormalization(name='bn2')(x)
-    x = tf.keras.layers.Activation('relu', name='relu2')(x)
-    x = tf.keras.layers.MaxPooling1D(2, name='pool2')(x)
-    x = tf.keras.layers.Dropout(0.3)(x)
-    
-    # 第三個卷積塊
-    x = tf.keras.layers.Conv1D(256, 5, padding='same', name='conv3')(x)
-    x = tf.keras.layers.BatchNormalization(name='bn3')(x)
-    x = tf.keras.layers.Activation('relu', name='relu3')(x)
-    x = tf.keras.layers.MaxPooling1D(2, name='pool3')(x)
-    x = tf.keras.layers.Dropout(0.4)(x)
-    
-    # 全局平均池化
-    x = tf.keras.layers.GlobalAveragePooling1D(name='gap')(x)
-    
-    # 全連接層
-    x = tf.keras.layers.Dense(256, activation='relu', name='dense1')(x)
-    x = tf.keras.layers.Dropout(0.5)(x)
-    x = tf.keras.layers.Dense(128, activation='relu', name='dense2')(x)
-    x = tf.keras.layers.Dropout(0.5)(x)
-    outputs = tf.keras.layers.Dense(num_classes, activation='softmax', name='classifier_output')(x)
-    
-    model = tf.keras.models.Model(inputs=inputs, outputs=outputs, name='cnn_classifier')
-    
-    # 使用 Adam 優化器，並設定較小的學習率
-    optimizer = tf.keras.optimizers.Adam(learning_rate=0.0001)
-    model.compile(optimizer=optimizer,
-                 loss='categorical_crossentropy',
-                 metrics=['accuracy'])
-    
-    return model
 
 def evaluate_model(model, test_data, save_dir, logger):
     """評估模型性能
@@ -572,16 +493,10 @@ def main():
         logger.info(f"標籤形狀: {labels.shape}")
         logger.info(f"文件名數量: {len(filenames)}")
         logger.info(f"受試者數量: {len(set(patient_ids))}")
-
-        # 使用 k-means 壓縮特徵
-        logger.info("開始進行特徵壓縮...")
-        compressed_features = kmeans_unify_features(features, n_clusters=30)
-        logger.info(f"壓縮後的特徵形狀: {compressed_features.shape}")
-        logger.info("特徵壓縮完成")
         
         # 準備數據集
         (train_features, train_labels), (val_features, val_labels), (test_features, test_labels) = prepare_data(
-            compressed_features,
+            features,
             labels,
             filenames,
             patient_ids,
@@ -594,19 +509,12 @@ def main():
         val_labels_onehot = tf.keras.utils.to_categorical(val_labels, num_classes=num_classes)
         test_labels_onehot = tf.keras.utils.to_categorical(test_labels, num_classes=num_classes)
 
-        # 為 Conv1D 擴展維度
-        train_features = np.expand_dims(train_features, axis=-1)  # shape=(samples, 30, 1)
-        val_features = np.expand_dims(val_features, axis=-1)
-        test_features = np.expand_dims(test_features, axis=-1)
-
         # 設置保存目錄
         save_dir = setup_save_dir()
         
         # 創建和編譯模型
-        model = create_model(
-            input_shape=(compressed_features.shape[1], 1),  # (30, 1)
-            num_classes=num_classes
-        )
+        model = AutoencoderModel(config['model'])
+        model.build()
         
         # 設置回調函數
         callbacks = setup_callbacks(save_dir)
@@ -630,7 +538,7 @@ def main():
             'encoder_input': test_features,
             'classifier_output': test_labels_onehot
         }
-        evaluate_model(model, test_data, save_dir, logger)
+        evaluate_model(model.model, test_data, save_dir, logger)
         
         # 保存訓練歷史
         save_history(history, save_dir)
