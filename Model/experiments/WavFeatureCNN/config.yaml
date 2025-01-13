@@ -1,0 +1,67 @@
+# 自編碼器實驗配置
+
+# 數據目錄配置
+data_dir: "/content/drive/MyDrive/MicforDysphagia/WavData/AutoEncoderData"
+original_data_dir: "/content/drive/MyDrive/MicforDysphagia/WavData/OriginalData"
+
+# 音頻處理配置
+audio:
+  sr: 16000
+  frame_size: 256
+  overlap: 128
+  fft_size: 256
+  seq_num: 512
+  batch_proc_size: 10
+
+# 模型結構配置
+model:
+  time_steps: 512  # 固定時間步長
+  feature_dim: 20000  # 特徵維度固定為20000
+  latent_dim: 512  # 潛在空間的維度
+  filters: [64, 128, 256, 512]  # 每層卷積的濾波器數量
+  kernel_sizes: [7, 5, 3, 3]  # 每層卷積的核大小
+  pool_sizes: [2, 2, 2, 2]  # 每層池化的大小
+  dropout_rate: 0.5
+  learning_rate: 0.001
+  use_batch_norm: true  # 是否使用批量標準化
+
+# 訓練配置
+training:
+  epochs: 100
+  batch_size: 32
+  early_stopping_patience: 10
+  validation_ratio: 0.2
+  test_ratio: 0.1
+  model_save_path: "saved_models/WavFeatureCNN"
+  save_best_only: true
+  monitor_metric: "val_loss"
+
+# 數據集配置
+dataset:
+  base_paths:
+    - "WavData/NormalSubject"
+    - "WavData/PatientSubject"
+  score_threshold: 3
+  selection_types:
+    NoMovement: ["無動作", "無吞嚥"]
+    DrySwallow: ["乾吞嚥1口", "乾吞嚥2口", "乾吞嚥3口", "乾吞嚥"]
+    Cracker: ["餅乾1塊", "餅乾2塊", "餅乾"]
+    Jelly: ["吞果凍", "果凍"]
+    WaterDrinking: ["吞水10ml", "吞水20ml", "喝水", "吞水"]
+  action_types:
+    - "NoMovement"
+    - "DrySwallow"
+    - "Cracker"
+    - "Jelly"
+    - "WaterDrinking"
+  labels_str:
+    - "Normal-No Movement"
+    - "Normal-Dry Swallow"
+    - "Normal-Cracker"
+    - "Normal-Jelly"
+    - "Normal-Water Drinking"
+    - "Patient-No Movement"
+    - "Patient-Dry Swallow"
+    - "Patient-Cracker"
+    - "Patient-Jelly"
+    - "Patient-Water Drinking" 

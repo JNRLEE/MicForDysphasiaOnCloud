@@ -1,4 +1,67 @@
- 
+# 20241222全資料測試
+
+# -*- coding: utf-8 -*-
+import os
+import sys
+import time
+import psutil
+import wave
+import gc  # Add this import at the top with other imports
+
+import numpy as np
+import scipy.io as sio
+import soundfile as sf
+import librosa
+
+import matplotlib.pyplot as plt
+
+import tensorflow as tf
+from tensorflow.keras.models import Sequential, Model, model_from_json
+from tensorflow.keras.layers import (Multiply, Add, Embedding, Concatenate, Input, Activation, Dense,
+                                     Conv2D, MaxPooling2D, Flatten, GlobalAveragePooling2D,
+                                     GlobalAveragePooling1D, UpSampling2D, LSTM, TimeDistributed, Dropout, BatchNormalization)
+from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.optimizers import SGD, Adadelta, Adagrad, RMSprop, Adam, Nadam, Adamax
+from tensorflow.keras.callbacks import ModelCheckpoint, CSVLogger, TerminateOnNaN, EarlyStopping
+from tensorflow.keras.metrics import AUC
+
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix, classification_report
+
+# Mount Google Drive
+from google.colab import drive
+drive.mount('/content/drive')
+
+# Add your custom module path
+sys.path.append('/content/drive/MyDrive/MicforDysphagia/')
+
+# Import custom modules
+from Function import utils
+from Function import Module_new
+
+import json
+
+def read_json_file(file_path):
+    encodings = ['utf-8', 'latin1']
+    for encoding in encodings:
+        try:
+            with open(file_path, 'r', encoding=encoding) as f:
+                return json.load(f)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+    raise ValueError(f"Unable to decode JSON file {file_path}")
+
+# Set parameters
+sr = 16000  # Sampling rate
+frame_size = 256
+overlap = 128
+fft_size = 256  # Analysis resolution = sr / fft_size
+
+model_path = './Model/Att_shuffle11'
+epochs = 4  # Increase the number of training epochs
+batch_size = 32  # Adjust batch size as needed
+seq_num = 129  # = overlap + 1
+feature_scale = 4
 
 # Define function for file-level prediction
 def predict_wav_file(model, wav_path):
