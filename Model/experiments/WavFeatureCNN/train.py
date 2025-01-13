@@ -15,6 +15,8 @@ import json
 import random
 import yaml
 from collections import Counter
+import time
+from datetime import datetime
 
 import tensorflow as tf
 import numpy as np
@@ -213,89 +215,190 @@ def prepare_data(
     filenames: List[str],
     patient_ids: List[str],
     logger: Optional[logging.Logger] = None
-) -> Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray]]:
-    """準備訓練、驗證和測試數據
+) -> Tuple[Tuple[np.ndarray, np.ndarray, np.ndarray], 
+           Tuple[np.ndarray, np.ndarray, np.ndarray],
+           Tuple[np.ndarray, np.ndarray, np.ndarray],
+           Tuple[List[str], List[str], List[str]]]:
+    """準備訓練、驗證和測試數據集，並返回受試者分組信息和文件索引
     
-    Args:
-        features: 特徵數據，形狀為 [samples, channels, sequence_length]
-        labels: 標籤數據
-        filenames: 文件名列表
-        patient_ids: 受試者ID列表
-        logger: 日誌記錄器
-        
     Returns:
-        訓練集、驗證集和測試集的元組，每個元組包含特徵和標籤
+        Tuple containing:
+        - (train_features, train_labels, train_file_indices)
+        - (val_features, val_labels, val_file_indices)
+        - (test_features, test_labels, test_file_indices)
+        - (train_patients, val_patients, test_patients)
     """
-    # 檢查數據有效性
-    if len(features) == 0:
-        raise ValueError("沒有有效的特徵數據")
-    if len(labels) == 0:
-        raise ValueError("沒有有效的標籤數據")
-    if len(filenames) == 0:
-        raise ValueError("沒有有效的文件名")
-    if len(patient_ids) == 0:
-        raise ValueError("沒有有效的受試者ID")
-    
     if logger:
         logger.info(f"原始特徵形狀: {features.shape}")
     
-    # 使用滑動窗口分割數據
-    window_size = 129  # 對應 example.py 中的 seq_num
-    stride = 64       # window_size//2，確保50%重疊
-    windows = sliding_window(features, window_size, stride)
-    if logger:
-        logger.info(f"滑動窗口分割後的特徵形狀: {windows.shape}")
+    # 確保 filenames 是字符串列表
+    if isinstance(filenames[0], list):
+        filenames = [f[0] if isinstance(f, list) else f for f in filenames]
     
-    # 調整標籤以匹配窗口數量
-    num_windows_per_sample = (features.shape[2] - window_size) // stride + 1
-    window_labels = np.repeat(labels, num_windows_per_sample)
+    # 創建文件到索引的映射（使用基本文件名，不包含路徑）
+    unique_files = sorted(set(os.path.basename(f) for f in filenames))
+    file_to_idx = {file: idx for idx, file in enumerate(unique_files)}
+    file_indices = np.array([file_to_idx[os.path.basename(f)] for f in filenames])
     
-    # 獲取唯一的受試者ID
-    unique_patients = list(set(patient_ids))
-    if len(unique_patients) < 3:
-        raise ValueError("受試者數量不足，無法進行訓練/驗證/測試集分割")
+    # 獲取每個受試者的類別分布
+    patient_class_dist = {}
+    for pid, label in zip(patient_ids, labels):
+        if pid not in patient_class_dist:
+            patient_class_dist[pid] = []
+        patient_class_dist[pid].append(label)
     
-    # 隨機打亂受試者順序
-    random.shuffle(unique_patients)
+    # 按類別分布對受試者進行分層
+    patient_groups = {i: [] for i in range(get_num_classes())}
+    for pid, labels_list in patient_class_dist.items():
+        main_class = Counter(labels_list).most_common(1)[0][0]
+        patient_groups[main_class].append(pid)
     
-    # 分割受試者
-    train_size = int(len(unique_patients) * 0.7)
-    val_size = int(len(unique_patients) * 0.15)
-    
-    train_patients = unique_patients[:train_size]
-    val_patients = unique_patients[train_size:train_size + val_size]
-    test_patients = unique_patients[train_size + val_size:]
+    # 從每個類別中按比例選擇受試者
+    train_patients, val_patients, test_patients = [], [], []
+    for class_patients in patient_groups.values():
+        if not class_patients:
+            continue
+        
+        random.shuffle(class_patients)  # 隨機打亂每個類別的受試者
+        train_size = int(len(class_patients) * 0.7)
+        val_size = int(len(class_patients) * 0.15)
+        
+        train_patients.extend(class_patients[:train_size])
+        val_patients.extend(class_patients[train_size:train_size + val_size])
+        test_patients.extend(class_patients[train_size + val_size:])
     
     # 根據受試者ID分割數據
-    train_indices = []
-    val_indices = []
-    test_indices = []
+    train_indices = [i for i, pid in enumerate(patient_ids) if pid in train_patients]
+    val_indices = [i for i, pid in enumerate(patient_ids) if pid in val_patients]
+    test_indices = [i for i, pid in enumerate(patient_ids) if pid in test_patients]
     
-    for i, pid in enumerate(patient_ids):
-        start_idx = i * num_windows_per_sample
-        end_idx = (i + 1) * num_windows_per_sample
-        if pid in train_patients:
-            train_indices.extend(range(start_idx, end_idx))
-        elif pid in val_patients:
-            val_indices.extend(range(start_idx, end_idx))
-        else:
-            test_indices.extend(range(start_idx, end_idx))
+    def process_features_with_sliding_windows(features: np.ndarray, indices: List[int], file_indices: np.ndarray, window_size: int = 129, stride: int = 64) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """使用滑動窗口處理特徵，並保持標籤和文件索引對應關係"""
+        windows_list = []
+        labels_list = []
+        file_indices_list = []
+        
+        for idx in indices:
+            feature = features[idx]
+            # 計算可能的窗口數量
+            num_windows = (feature.shape[1] - window_size) // stride + 1
+            
+            # 對每個樣本進行滑動窗口處理
+            for i in range(num_windows):
+                start = i * stride
+                end = start + window_size
+                window = feature[:, start:end]
+                windows_list.append(window)
+                labels_list.append(labels[idx])
+                file_indices_list.append(file_indices[idx])
+        
+        return np.array(windows_list), np.array(labels_list), np.array(file_indices_list)
     
-    # 創建數據集
-    train_features = windows[train_indices]
-    train_labels = window_labels[train_indices]
-    val_features = windows[val_indices]
-    val_labels = window_labels[val_indices]
-    test_features = windows[test_indices]
-    test_labels = window_labels[test_indices]
+    # 使用滑動窗口處理每個數據集
+    train_features, train_labels, train_file_indices = process_features_with_sliding_windows(features, train_indices, file_indices)
+    val_features, val_labels, val_file_indices = process_features_with_sliding_windows(features, val_indices, file_indices)
+    test_features, test_labels, test_file_indices = process_features_with_sliding_windows(features, test_indices, file_indices)
     
-    # 打印分割信息
     if logger:
-        logger.info(f"訓練集形狀: {train_features.shape}, 標籤形狀: {train_labels.shape}")
-        logger.info(f"驗證集形狀: {val_features.shape}, 標籤形狀: {val_labels.shape}")
-        logger.info(f"測試集形狀: {test_features.shape}, 標籤形狀: {test_labels.shape}")
+        # 計算原始音檔數量
+        train_unique_files = len(set(file_indices[train_indices]))
+        val_unique_files = len(set(file_indices[val_indices]))
+        test_unique_files = len(set(file_indices[test_indices]))
+        
+        logger.info(f"訓練集：{train_unique_files} 個原始音檔, {len(train_features)} 個切片")
+        logger.info(f"驗證集：{val_unique_files} 個原始音檔, {len(val_features)} 個切片")
+        logger.info(f"測試集：{test_unique_files} 個原始音檔, {len(test_features)} 個切片")
     
-    return (train_features, train_labels), (val_features, val_labels), (test_features, test_labels)
+    return (train_features, train_labels, train_file_indices), \
+           (val_features, val_labels, val_file_indices), \
+           (test_features, test_labels, test_file_indices), \
+           (train_patients, val_patients, test_patients)
+
+def print_dataset_statistics(
+    train_labels: np.ndarray,
+    val_labels: np.ndarray,
+    test_labels: np.ndarray,
+    train_patients: List[str],
+    val_patients: List[str],
+    test_patients: List[str],
+    patient_ids: List[str],
+    logger: logging.Logger
+):
+    """打印詳細的數據集統計信息，包含受試者分布"""
+    logger.info("\n=== 數據集分布統計 ===")
+    
+    # 打印受試者分布
+    logger.info("\n受試者分布:")
+    logger.info(f"訓練集受試者 ({len(train_patients)}): {', '.join(sorted(train_patients))}")
+    logger.info(f"驗證集受試者 ({len(val_patients)}): {', '.join(sorted(val_patients))}")
+    logger.info(f"測試集受試者 ({len(test_patients)}): {', '.join(sorted(test_patients))}")
+    
+    # 打印每個受試者的樣本數量
+    logger.info("\n每個受試者的樣本數量:")
+    for split_name, split_patients in [
+        ("訓練集", train_patients),
+        ("驗證集", val_patients),
+        ("測試集", test_patients)
+    ]:
+        logger.info(f"\n{split_name}:")
+        for patient in sorted(split_patients):
+            samples = sum(1 for pid in patient_ids if pid == patient)
+            logger.info(f"  受試者 {patient}: {samples} 樣本")
+    
+    # 打印類別分布
+    logger.info("\n類別分布:")
+    for split_name, labels in [
+        ("訓練集", train_labels),
+        ("驗證集", val_labels),
+        ("測試集", test_labels)
+    ]:
+        class_dist = Counter(labels)
+        logger.info(f"\n{split_name}:")
+        for class_id, count in sorted(class_dist.items()):
+            logger.info(f"  類別 {class_id}: {count} 樣本")
+    logger.info("\n==================\n")
+
+def save_split_info(
+    train_patients: List[str],
+    val_patients: List[str],
+    test_patients: List[str],
+    save_dir: Path
+):
+    """保存數據分割信息，包含受試者ID和時間戳"""
+    split_info = {
+        'train_patients': sorted(train_patients),
+        'val_patients': sorted(val_patients),
+        'test_patients': sorted(test_patients),
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    }
+    
+    # 確保目錄存在
+    save_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 保存分割信息
+    save_path = save_dir / 'split_info.json'
+    with open(save_path, 'w', encoding='utf-8') as f:
+        json.dump(split_info, f, ensure_ascii=False, indent=2)
+
+class TrainingProgressCallback(tf.keras.callbacks.Callback):
+    """訓練進度回調"""
+    def __init__(self, logger):
+        super().__init__()
+        self.logger = logger
+        self.epoch_start_time = None
+    
+    def on_epoch_begin(self, epoch, logs=None):
+        self.epoch_start_time = time.time()
+    
+    def on_epoch_end(self, epoch, logs=None):
+        epoch_time = time.time() - self.epoch_start_time
+        self.logger.info(f"\n=== Epoch {epoch + 1} 統計 ===")
+        self.logger.info(f"耗時: {epoch_time:.2f} 秒")
+        self.logger.info(f"訓練損失: {logs['loss']:.4f}")
+        self.logger.info(f"驗證損失: {logs['val_loss']:.4f}")
+        self.logger.info(f"訓練準確率: {logs['accuracy']:.4f}")
+        self.logger.info(f"驗證準確率: {logs['val_accuracy']:.4f}")
+        self.logger.info("==================\n")
 
 def setup_callbacks(save_dir: str) -> List[tf.keras.callbacks.Callback]:
     """設置訓練回調函數
@@ -320,63 +423,83 @@ def setup_callbacks(save_dir: str) -> List[tf.keras.callbacks.Callback]:
     ]
     return callbacks
 
-def evaluate_model(model, test_data, save_dir, logger):
-    """評估模型性能
+def evaluate_model(
+    model,
+    features: np.ndarray,
+    labels: np.ndarray,
+    file_indices: np.ndarray,
+    save_dir: str,
+    logger: logging.Logger
+) -> Tuple[float, np.ndarray, np.ndarray]:
+    """評估模型性能，將同一音檔的多個切片預測結果合併
+    
     Args:
         model: 訓練好的模型
-        test_data: 測試數據字典，包含 'encoder_input' 和 'classifier_output'
+        features: 特徵數據
+        labels: 標籤數據
+        file_indices: 文件索引，用於識別同一音檔的不同切片
         save_dir: 保存目錄
         logger: 日誌記錄器
     """
-    # 計算測試集性能
-    test_loss, test_accuracy = model.evaluate(
-        test_data['encoder_input'],
-        test_data['classifier_output']
-    )
-    logger.info(f'測試集準確率: {test_accuracy:.4f}')
+    # 獲取每個切片的預測結果
+    predictions = model.predict(features)
     
-    # 獲取預測結果
-    y_pred = model.predict(test_data['encoder_input'])
-    y_pred_classes = np.argmax(y_pred, axis=1)
-    y_true = np.argmax(test_data['classifier_output'], axis=1)
+    # 按文件合併預測結果
+    unique_files = np.unique(file_indices)
+    merged_predictions = []
+    merged_labels = []
+    
+    for file_idx in unique_files:
+        # 獲取該文件的所有切片預測
+        file_mask = file_indices == file_idx
+        file_predictions = predictions[file_mask]
+        
+        # 對所有切片取平均得到最終預測
+        mean_prediction = np.mean(file_predictions, axis=0)
+        predicted_class = np.argmax(mean_prediction)
+        
+        # 獲取真實標籤（所有切片的標籤應該相同）
+        true_label = labels[file_mask][0]
+        
+        merged_predictions.append(predicted_class)
+        merged_labels.append(true_label)
+    
+    # 轉換為numpy數組
+    merged_predictions = np.array(merged_predictions)
+    merged_labels = np.array(merged_labels)
+    
+    # 計算準確率
+    accuracy = np.mean(merged_predictions == merged_labels)
+    logger.info(f'合併後的準確率: {accuracy:.4f} (基於 {len(unique_files)} 個原始音檔)')
     
     # 獲取類別名稱
     class_names = get_active_class_names()
     
     # 計算混淆矩陣
-    cm = confusion_matrix(y_true, y_pred_classes)
+    cm = confusion_matrix(merged_labels, merged_predictions)
     
     # 打印混淆矩陣（純文字格式）
-    print('\n=== 混淆矩陣 ===')
+    logger.info('\n=== 混淆矩陣（基於原始音檔） ===')
+    
     # 打印標題行
-    print(f"{'':25}", end='')
-    for name in class_names:
-        print(f"{name:15}", end=' ')
-    print('\n')
+    header = '真實\\預測    ' + '    '.join(f'{name[:8]:8}' for name in class_names)
+    logger.info(header)
     
     # 打印每一行
     for i, (row, class_name) in enumerate(zip(cm, class_names)):
-        print(f"{class_name:25}", end='')
-        for val in row:
-            print(f"{val:15}", end=' ')
-        print()
-    print('==================\n')
+        row_str = f'{class_name[:8]:8}    ' + '    '.join(f'{val:8d}' for val in row)
+        logger.info(row_str)
     
     # 保存混淆矩陣到文件
     confusion_matrix_file = os.path.join(save_dir, 'confusion_matrix.txt')
     with open(confusion_matrix_file, 'w', encoding='utf-8') as f:
-        f.write('=== 混淆矩陣 ===\n')
-        f.write(f"{'':25}")
-        for name in class_names:
-            f.write(f"{name:15} ")
-        f.write('\n\n')
-        
+        f.write('=== 混淆矩陣（基於原始音檔） ===\n')
+        f.write(header + '\n\n')
         for i, (row, class_name) in enumerate(zip(cm, class_names)):
-            f.write(f"{class_name:25}")
-            for val in row:
-                f.write(f"{val:15} ")
-            f.write('\n')
-        f.write('==================\n')
+            row_str = f'{class_name[:8]:8}    ' + '    '.join(f'{val:8d}' for val in row)
+            f.write(row_str + '\n')
+    
+    return accuracy, merged_predictions, merged_labels
 
 def train_model(
     model: AutoencoderModel,
@@ -398,11 +521,33 @@ def train_model(
         Tuple[Dict, Dict]: (訓練歷史, 評估結果)
     """
     # 設置保存目錄
-    save_dir = Path(config.get('save_dir', 'saved_models'))
+    save_dir = Path(config.get('training', {}).get('model_save_path', 'saved_models'))
     save_dir.mkdir(parents=True, exist_ok=True)
     
     # 設置回調
-    callbacks = setup_callbacks(str(save_dir))
+    callbacks = [
+        # 模型檢查點
+        tf.keras.callbacks.ModelCheckpoint(
+            filepath=str(save_dir / 'best_model.keras'),
+            save_best_only=True,
+            monitor=config['training']['monitor_metric'],
+            mode='min'
+        ),
+        # 提前停止
+        tf.keras.callbacks.EarlyStopping(
+            monitor=config['training']['monitor_metric'],
+            patience=config['training']['early_stopping_patience'],
+            restore_best_weights=True
+        ),
+        # TensorBoard
+        tf.keras.callbacks.TensorBoard(
+            log_dir=str(save_dir / 'logs'),
+            histogram_freq=1,
+            update_freq='epoch'
+        ),
+        # 自定義進度回調
+        TrainingProgressCallback(logger)
+    ]
     
     # 訓練模型
     history = model.fit(
@@ -412,20 +557,31 @@ def train_model(
             val_data['encoder_input'],
             val_data['classifier_output']
         ),
-        batch_size=config.get('batch_size', 32),
-        epochs=config.get('training', {}).get('epochs', 100),  # 從配置文件讀取 epochs
+        batch_size=config['training']['batch_size'],
+        epochs=config['training']['epochs'],
         callbacks=callbacks,
-        verbose=1
+        verbose=config['training']['verbose'],
+        use_multiprocessing=config['training']['use_multiprocessing'],
+        workers=config['training']['workers']
     )
     
     # 評估模型
     evaluation_results = evaluate_model(
         model,
         val_data,
-        val_data['classifier_output'],
         str(save_dir),
         logger
     )
+    
+    # 保存訓練歷史
+    history_path = save_dir / 'training_history.json'
+    with open(history_path, 'w', encoding='utf-8') as f:
+        history_dict = {}
+        for key, value in history.history.items():
+            history_dict[key] = [float(v) for v in value]
+        json.dump(history_dict, f, ensure_ascii=False, indent=2)
+    
+    logger.info(f"訓練歷史已保存到: {history_path}")
     
     return history.history, evaluation_results
 
@@ -478,57 +634,82 @@ def main():
         logger.info(f"受試者數量: {len(set(patient_ids))}")
         
         # 準備數據集
-        (train_features, train_labels), (val_features, val_labels), (test_features, test_labels) = prepare_data(
+        (train_features, train_labels, train_file_indices), \
+        (val_features, val_labels, val_file_indices), \
+        (test_features, test_labels, test_file_indices), \
+        (train_patients, val_patients, test_patients) = prepare_data(
             features,
             labels,
             filenames,
             patient_ids,
             logger=logger
         )
+        
+        # 打印詳細的數據集統計信息
+        print_dataset_statistics(
+            train_labels, val_labels, test_labels,
+            train_patients, val_patients, test_patients,
+            patient_ids, logger
+        )
+        
+        # 保存分割信息
+        save_dir = Path(setup_save_dir())
+        save_split_info(train_patients, val_patients, test_patients, save_dir)
 
         # 轉換標籤為 one-hot 編碼
         num_classes = get_num_classes()
         train_labels_onehot = tf.keras.utils.to_categorical(train_labels, num_classes=num_classes)
         val_labels_onehot = tf.keras.utils.to_categorical(val_labels, num_classes=num_classes)
         test_labels_onehot = tf.keras.utils.to_categorical(test_labels, num_classes=num_classes)
-
-        # 設置保存目錄
-        save_dir = setup_save_dir()
         
         # 創建和編譯模型
         model = AutoencoderModel(config['model'])
         model.build()
         
         # 設置回調函數
-        callbacks = setup_callbacks(save_dir)
-        
-        # 從配置文件獲取訓練參數
-        epochs = config['training']['epochs']
-        batch_size = config['training']['batch_size']
+        callbacks = setup_callbacks(str(save_dir))
         
         # 訓練模型
         history = model.fit(
             x=train_features,
             y=train_labels_onehot,
             validation_data=(val_features, val_labels_onehot),
-            epochs=epochs,
-            batch_size=batch_size,
-            callbacks=callbacks
+            epochs=config['training']['epochs'],
+            batch_size=config['training']['batch_size'],
+            callbacks=callbacks,
+            verbose=config['training']['verbose']
         )
         
-        # 評估模型並生成混淆矩陣
-        test_data = {
-            'encoder_input': test_features,
-            'classifier_output': test_labels_onehot
-        }
-        evaluate_model(model.model, test_data, save_dir, logger)
+        # 評估模型（基於原始文件）
+        logger.info("\n=== 模型評估（基於原始文件） ===")
+        
+        # 評估訓練集
+        train_acc, train_preds, train_true = evaluate_model(
+            model, train_features, train_labels, train_file_indices,
+            str(save_dir), logger
+        )
+        logger.info(f"訓練集準確率: {train_acc:.4f}")
+        
+        # 評估驗證集
+        val_acc, val_preds, val_true = evaluate_model(
+            model, val_features, val_labels, val_file_indices,
+            str(save_dir), logger
+        )
+        logger.info(f"驗證集準確率: {val_acc:.4f}")
+        
+        # 評估測試集
+        test_acc, test_preds, test_true = evaluate_model(
+            model, test_features, test_labels, test_file_indices,
+            str(save_dir), logger
+        )
+        logger.info(f"測試集準確率: {test_acc:.4f}")
         
         # 保存訓練歷史
-        save_history(history, save_dir)
+        save_history(history, str(save_dir))
         
     except Exception as e:
         logger.error(f"訓練過程中出錯: {str(e)}")
-        logger.error(f"Traceback:", exc_info=True)
+        logger.error("Traceback:", exc_info=True)
         raise
 
 if __name__ == '__main__':

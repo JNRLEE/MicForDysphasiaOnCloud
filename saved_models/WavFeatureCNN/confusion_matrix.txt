@@ -1,0 +1,5 @@
+=== 混淆矩陣（基於原始音檔） ===
+真實\預測    Normal-N    Normal-D    Normal-J    Patient-    Patient-    Patient-
+
+Normal-N           0           1
+Normal-D           0           0

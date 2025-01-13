@@ -6,6 +6,7 @@ feature_processing:
   channels: 512       # 特徵通道數
   window_size: 129    # 時間窗口大小
   stride: 64         # 步長，確保50%重疊
+  batch_proc_size: 32  # 批次處理大小
 
 # 數據目錄配置
 data_dir: "/content/drive/MyDrive/MicforDysphagia/WavData/AutoEncoderData"
@@ -35,14 +36,17 @@ model:
 
 # 訓練配置
 training:
-  epochs: 100
-  batch_size: 32
-  early_stopping_patience: 10
+  epochs: 30         # 降低 epochs 數量
+  batch_size: 16     # 降低 batch size 以更好利用記憶體
+  early_stopping_patience: 5  # 提前停止的耐心值
   validation_ratio: 0.2
   test_ratio: 0.1
   model_save_path: "saved_models/WavFeatureCNN"
   save_best_only: true
   monitor_metric: "val_loss"
+  verbose: 1         # 訓練過程的詳細程度
+  use_multiprocessing: true  # 使用多進程
+  workers: 4         # 工作進程數
 
 # 數據集配置
 dataset:
