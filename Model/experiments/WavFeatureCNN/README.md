@@ -12,7 +12,7 @@
 ### 2. 本地環境
 ```bash
 # 本地環境中的路徑
-/Users/[username]/Library/CloudStorage/GoogleDrive-[email]/My Drive/MicforDysphagia/WavData/
+/Users/jnrle/Library/CloudStorage/GoogleDrive-jenner.lee.com@gmail.com/My Drive/MicforDysphagia/WavData/
 ```
 
 ### 3. 路徑處理建議
