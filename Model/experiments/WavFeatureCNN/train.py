@@ -23,6 +23,8 @@ import numpy as np
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, TensorBoard
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import confusion_matrix
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # 取專案根目錄的絕對路徑
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -126,7 +128,7 @@ def print_confusion_matrix_text(y_true: np.ndarray, y_pred: np.ndarray, label_na
     
     Args:
         y_true: 真實標籤
-        y_pred: 預測標籤
+        y_pred: 預測測標籤
         label_names: 標籤名稱列表
     """
     from sklearn.metrics import confusion_matrix
@@ -430,107 +432,254 @@ def setup_callbacks(save_dir: str) -> List[tf.keras.callbacks.Callback]:
     ]
     return callbacks
 
+def save_confusion_matrix(cm, save_dir, class_labels=None):
+    """
+    將混淆矩陣保存為圖片
+    
+    Args:
+        cm: 混淆矩陣
+        save_dir: 保存目錄
+        class_labels: 類別標籤列表
+    """
+    plt.figure(figsize=(12, 10))
+    
+    # 如果沒有提供類別標籤，使用數字標籤
+    if class_labels is None:
+        class_labels = [str(i) for i in range(cm.shape[0])]
+    
+    # 繪製熱圖
+    sns.heatmap(
+        cm,
+        annot=True,
+        fmt='d',
+        cmap='Blues',
+        xticklabels=class_labels,
+        yticklabels=class_labels
+    )
+    
+    # 設置標題和標籤
+    plt.title('混淆矩陣')
+    plt.ylabel('真實標籤')
+    plt.xlabel('預測標籤')
+    
+    # 調整布局以確保標籤完全顯示
+    plt.tight_layout()
+    
+    # 保存圖片
+    plt.savefig(os.path.join(save_dir, 'confusion_matrix.png'))
+    plt.close()
+
 def evaluate_model(model, features, labels, filenames, save_dir, logger):
     """評估模型性能
     
     Args:
-        model: 模型實例
-        features: List[np.ndarray] 每個音頻文件的所有窗口特徵
-        labels: List[int] 每個音頻文件的標籤
-        filenames: List[str] 每個音頻文件的文件名
-        save_dir: str 保存目錄路徑
+        model: 訓練好的模型
+        features: 特徵數據
+        labels: 標籤數據
+        filenames: 文件名列表
+        save_dir: 保存目錄
         logger: 日誌記錄器
     
     Returns:
-        Tuple[float, np.ndarray, np.ndarray] 準確率、預測標籤、真實標籤
+        評估結果
     """
     logger.info("開始評估模型...")
     
-    # 初始化預測結果列表
-    all_predictions = []
-    all_true_labels = []
-    
-    # 對每個音頻文件進行預測
-    for file_idx, (file_features, file_label, filename) in enumerate(zip(features, labels, filenames)):
-        # 獲取該文件所有窗口的預測結果
-        window_predictions = model.predict(file_features, verbose=0)  # [num_windows, num_classes]
+    try:
+        # 使用較小的批次大小
+        EVAL_BATCH_SIZE = 8
         
-        # 平均所有窗口的預測結果
-        file_prediction = np.mean(window_predictions, axis=0)  # [num_classes]
-        predicted_label = np.argmax(file_prediction)
+        # 建立評估數據生成器
+        eval_generator = SequentialBatchGenerator(
+            features,
+            labels,
+            batch_size=EVAL_BATCH_SIZE,
+            shuffle=False
+        )
         
-        # 記錄預測結果
-        all_predictions.append(predicted_label)
-        all_true_labels.append(file_label)
+        # 使用 model.predict 獲取預測結果
+        all_predictions = []
+        all_labels = []
         
-        # 記錄詳細信息
-        logger.info(f"文件 {filename}:")
-        logger.info(f"  窗口數量: {len(file_features)}")
-        logger.info(f"  真實標籤: {file_label}")
-        logger.info(f"  預測標籤: {predicted_label}")
-        logger.info(f"  預測正確: {'是' if predicted_label == file_label else '否'}")
-    
-    # 轉換為 numpy 數組
-    predictions = np.array(all_predictions)
-    true_labels = np.array(all_true_labels)
-    
-    # 計算準確率
-    accuracy = np.mean(predictions == true_labels)
-    
-    # 計算並打印混淆矩陣
-    cm = confusion_matrix(true_labels, predictions)
-    logger.info("\n混淆矩陣:")
-    logger.info(f"\n{cm}")
-    
-    # 保存混淆矩陣圖
-    save_confusion_matrix(cm, save_dir)
-    
-    return accuracy, predictions, true_labels
+        # 批次處理預測以節省內存
+        total_batches = len(eval_generator)
+        for batch_idx in range(total_batches):
+            try:
+                # 獲取批次數據
+                batch_features, batch_labels = eval_generator[batch_idx]
+                
+                # 確保批次數據形狀正確
+                if len(batch_features.shape) == 4:
+                    batch_features = np.squeeze(batch_features, axis=-1)
+                
+                # 預測
+                batch_pred = model(batch_features, training=False).numpy()
+                
+                # 保存結果
+                all_predictions.append(batch_pred)
+                all_labels.extend(batch_labels)
+                
+                # 清理內存
+                tf.keras.backend.clear_session()
+                
+            except Exception as e:
+                logger.error(f"處理批次 {batch_idx}/{total_batches} 時出錯: {str(e)}")
+                continue
+        
+        if not all_predictions:
+            raise ValueError("沒有成功的預測結果")
+        
+        # 合併所有預測結果
+        predictions = np.vstack(all_predictions)
+        predicted_labels = np.argmax(predictions, axis=1)
+        true_labels = np.array(all_labels)
+        
+        # 計算混淆矩陣
+        cm = confusion_matrix(true_labels, predicted_labels)
+        
+        # 獲取活躍的類別名稱
+        class_names = get_active_class_names()
+        
+        # 顯示混淆矩陣
+        logger.info("\n=== 混淆矩陣 ===")
+        logger.info("\n真實標籤 (列) vs 預測標籤 (行):")
+        
+        # 打印列標籤
+        header = "     "
+        for i in range(len(class_names)):
+            header += f"{i:>5}"
+        logger.info(header)
+        
+        # 打印每一行
+        for i, row in enumerate(cm):
+            row_str = f"{i:>4}"
+            for val in row:
+                row_str += f"{val:>5}"
+            logger.info(row_str)
+        
+        # 計算每個類別的指標
+        logger.info("\n=== 各類別評估指標 ===")
+        total_correct = 0
+        total_samples = 0
+        
+        class_metrics = []
+        for i, (name, row) in enumerate(zip(class_names, cm)):
+            true_positive = row[i]
+            total = np.sum(row)
+            
+            if total > 0:
+                accuracy = true_positive / total
+                total_correct += true_positive
+                total_samples += total
+                
+                # 計算精確率和召回率
+                precision = true_positive / np.sum(cm[:, i]) if np.sum(cm[:, i]) > 0 else 0
+                recall = true_positive / total if total > 0 else 0
+                f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+                
+                class_metrics.append({
+                    'name': name,
+                    'samples': total,
+                    'correct': true_positive,
+                    'accuracy': accuracy,
+                    'precision': precision,
+                    'recall': recall,
+                    'f1': f1
+                })
+        
+        # 按準確率排序並顯示結果
+        class_metrics.sort(key=lambda x: x['accuracy'], reverse=True)
+        
+        for metrics in class_metrics:
+            logger.info(f"\n類別 {metrics['name']}:")
+            logger.info(f"  樣本數: {metrics['samples']}")
+            logger.info(f"  正確預測: {metrics['correct']}")
+            logger.info(f"  準確率: {metrics['accuracy']:.4f}")
+            logger.info(f"  精確率: {metrics['precision']:.4f}")
+            logger.info(f"  召回率: {metrics['recall']:.4f}")
+            logger.info(f"  F1分數: {metrics['f1']:.4f}")
+        
+        # 計算整體準確率
+        overall_accuracy = total_correct / total_samples if total_samples > 0 else 0
+        logger.info(f"\n整體準確率: {overall_accuracy:.4f}")
+        
+        return {
+            'accuracy': overall_accuracy,
+            'confusion_matrix': cm,
+            'predictions': predicted_labels,
+            'true_labels': true_labels,
+            'class_metrics': class_metrics
+        }
+        
+    except Exception as e:
+        logger.error(f"評估過程中出錯: {str(e)}")
+        logger.error("詳細錯誤:", exc_info=True)
+        raise
 
 class SequentialBatchGenerator(tf.keras.utils.Sequence):
     """順序批次生成器，保持同一音頻文件的窗口順序"""
+    
     def __init__(self, features, labels, batch_size, shuffle=True):
-        self.features = features  # 列表，每個元素是一個音頻文件的所有窗口
-        self.labels = labels    # 列表，每個元素是一個音頻文件的標籤
+        """初始化生成器
+        
+        Args:
+            features: 特徵列表，每個元素是一個音頻文件的所有窗口
+            labels: 標籤列表，每個元素是一個音頻文件的標籤
+            batch_size: 批次大小
+            shuffle: 是否打亂數據順序
+        """
+        self.features = features
+        self.labels = labels
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.num_classes = get_num_classes()
-        self.indices = np.arange(len(self.features))
+        
+        # 創建窗口索引
+        self.window_indices = []
+        for file_idx, file_features in enumerate(self.features):
+            for window_idx in range(len(file_features)):
+                self.window_indices.append((file_idx, window_idx))
+        
+        # 初始打亂索引
+        self.indices = np.arange(len(self.window_indices))
         if self.shuffle:
             np.random.shuffle(self.indices)
     
     def __len__(self):
         """返回每個 epoch 的批次數量"""
-        total_windows = sum(len(f) for f in self.features)
-        return int(np.ceil(total_windows / self.batch_size))
+        return int(np.ceil(len(self.window_indices) / self.batch_size))
     
     def __getitem__(self, idx):
-        """獲取一個批次的數據"""
+        """獲取一個批次的數據
+        
+        Args:
+            idx: 批次索引
+            
+        Returns:
+            (batch_features, batch_labels): 一個批次的特徵和標籤
+        """
+        # 獲取當前批次的索引
+        start_idx = idx * self.batch_size
+        end_idx = min(start_idx + self.batch_size, len(self.window_indices))
+        batch_indices = self.indices[start_idx:end_idx]
+        
+        # 準備批次數據
         batch_features = []
         batch_labels = []
-        current_size = 0
         
-        while current_size < self.batch_size:
-            file_idx = self.indices[idx % len(self.indices)]
-            file_features = self.features[file_idx]
-            file_label = self.labels[file_idx]
+        for idx in batch_indices:
+            file_idx, window_idx = self.window_indices[idx]
+            window = self.features[file_idx][window_idx]
             
-            # 添加此文件的所有窗口
-            for window in file_features:
-                if current_size >= self.batch_size:
-                    break
-                # 移除額外的 channel 維度（如果存在）
-                if len(window.shape) == 3:
-                    window = np.squeeze(window, axis=-1)
-                batch_features.append(window)
-                batch_labels.append(file_label)
-                current_size += 1
+            # 確保窗口形狀正確
+            if len(window.shape) == 3:
+                window = np.squeeze(window, axis=-1)
             
-            if current_size < self.batch_size:
-                idx = (idx + 1) % len(self.indices)
+            batch_features.append(window)
+            batch_labels.append(self.labels[file_idx])
         
-        # 將特徵轉換為 numpy 數組並確保形狀正確
-        batch_features = np.array(batch_features)  # 形狀為 (batch_size, window_size, feature_dim)
+        # 轉換為 numpy 數組
+        batch_features = np.array(batch_features)
         batch_labels = np.array(batch_labels)
         
         return batch_features, batch_labels
@@ -584,6 +733,21 @@ def train_model(model, train_data, val_data, config, logger):
         shuffle=False
     )
     
+    # 設算類別權重以處理不平衡數據
+    unique_labels = np.unique(train_labels)
+    class_weights = {}
+    total_samples = len(train_labels)
+    n_classes = len(unique_labels)
+    
+    for label in unique_labels:
+        class_count = np.sum(train_labels == label)
+        weight = (1.0 / class_count) * (total_samples / n_classes)
+        class_weights[label] = weight
+    
+    logger.info("\n=== 類別權重 ===")
+    for label, weight in class_weights.items():
+        logger.info(f"類別 {label}: {weight:.4f}")
+    
     # 設置回調函數
     callbacks = [
         tf.keras.callbacks.ModelCheckpoint(
@@ -613,9 +777,8 @@ def train_model(model, train_data, val_data, config, logger):
         validation_data=val_generator,
         epochs=config['training']['epochs'],
         callbacks=callbacks,
-        verbose=config['training'].get('verbose', 1),
-        use_multiprocessing=config['training'].get('use_multiprocessing', True),
-        workers=config['training'].get('workers', 4)
+        class_weight=class_weights,
+        verbose=config['training'].get('verbose', 1)
     )
     
     # 評估驗證集
@@ -628,7 +791,7 @@ def train_model(model, train_data, val_data, config, logger):
         save_dir,
         logger
     )
-    logger.info(f"驗證集準確率: {val_results[0]:.4f}")
+    logger.info(f"驗證集準確率: {val_results['accuracy']:.4f}")
     
     return history, val_results
 
@@ -736,7 +899,7 @@ def main():
             str(save_dir),
             logger
         )
-        logger.info(f"測試集準確率: {test_results[0]:.4f}")
+        logger.info(f"測試集準確率: {test_results['accuracy']:.4f}")
         
         # 保存訓練歷史
         save_history(history, str(save_dir))

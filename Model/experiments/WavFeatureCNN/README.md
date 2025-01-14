@@ -8,6 +8,7 @@
 # Colab中的路徑
 /content/drive/MyDrive/MicforDysphagia/WavData/
 ```
+執行路徑："PYTHONPATH=/content/drive/MyDrive/MicforDysphagia python Model/experiments/WavFeatureCNN/train.py"
 
 ### 2. 本地環境
 ```bash

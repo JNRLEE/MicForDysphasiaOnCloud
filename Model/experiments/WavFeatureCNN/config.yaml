@@ -38,7 +38,7 @@ model:
 # 訓練配置
 training:
   batch_size: 32
-  epochs: 100
+  epochs: 30
   learning_rate: 0.001
   early_stopping_patience: 10
   reduce_lr_patience: 5

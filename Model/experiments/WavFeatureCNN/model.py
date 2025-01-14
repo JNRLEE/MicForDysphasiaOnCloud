@@ -98,11 +98,16 @@ class AutoencoderModel(tf.keras.Model):
         
         Args:
             inputs: 輸入張量，形狀為 [batch_size, window_size, feature_dim]
+                   或者是一個張量的元組
             training: 是否處於訓練模式
             
         Returns:
             輸出張量，形狀為 [batch_size, num_classes]
         """
+        # 如果輸入是元組，取第一�元素
+        if isinstance(inputs, tuple):
+            inputs = inputs[0]
+        
         # 確保輸入維度正確
         if len(inputs.shape) == 4:
             # 如果輸入是 4D，移除 channel 維度
