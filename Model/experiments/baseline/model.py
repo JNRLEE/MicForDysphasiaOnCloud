@@ -5,6 +5,7 @@
 2. 每層後接BatchNorm和MaxPooling
 3. 分類器使用GlobalAveragePooling + Dropout + Dense
 4. 使用categorical crossentropy作為損失函數
+5. 支持動態類別數量配置
 """
 
 from typing import Dict, Tuple, Any
@@ -18,11 +19,21 @@ from tensorflow.keras.callbacks import EarlyStopping
 
 from Model.base.abstract import BaseModel
 from Model.base.config import ModelConfig
+from Model.base.class_config import get_active_classes, get_num_classes
 
 class BaselineModel(BaseModel):
     def __init__(self, config: ModelConfig):
+        """初始化基線模型
+        
+        Args:
+            config: 模型配置對象
+        """
         self.config = config
         self.model = None
+        
+        # 根據活動類別動態設置類別數量
+        self.active_classes = get_active_classes()
+        self.config.num_classes = get_num_classes()
     
     def _build_conv_block(self, x, filters: int, kernel_size: Tuple[int, int], 
                          dilation_rate: int) -> Model:
@@ -94,7 +105,16 @@ class BaselineModel(BaseModel):
         return self.model
 
     def train(self, train_data: Tuple, val_data: Tuple, **kwargs) -> Dict:
-        """訓練模型"""
+        """訓練模型
+        
+        Args:
+            train_data: 訓練數據元組 (特徵, 標籤)
+            val_data: 驗證數據元組 (特徵, 標籤)
+            **kwargs: 其他訓練參數
+            
+        Returns:
+            Dict: 訓練歷史記錄
+        """
         X_train, y_train = train_data
         X_val, y_val = val_data
         
@@ -119,7 +139,14 @@ class BaselineModel(BaseModel):
         return history.history
 
     def evaluate(self, test_data: Tuple) -> Dict[str, float]:
-        """評估模型"""
+        """評估模型
+        
+        Args:
+            test_data: 測試數據元組 (特徵, 標籤)
+            
+        Returns:
+            Dict[str, float]: 評估指標
+        """
         X_test, y_test = test_data
         metrics = self.model.evaluate(X_test, y_test, verbose=1)
         return {
@@ -128,10 +155,17 @@ class BaselineModel(BaseModel):
             'auroc': metrics[2]
         }
 
-    def predict_file(self, wav_file: str, audio_config: Any) -> Dict:
-        """文件級預測"""
+    def predict_file(self, features: np.ndarray) -> Dict:
+        """對單個文件進行預測
+        
+        Args:
+            features: 特徵數據，形狀為 (batch_size, time_steps, feature_dim)
+            
+        Returns:
+            Dict: 包含不同預測策略的結果
+        """
         # 獲取所有段的預測
-        segments_pred = self.model.predict(wav_file)
+        segments_pred = self.model.predict(features)
         
         # 策略1：投票法
         vote_pred = np.argmax(np.bincount(np.argmax(segments_pred, axis=1)))

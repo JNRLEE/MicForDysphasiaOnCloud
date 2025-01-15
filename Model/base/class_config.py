@@ -17,8 +17,8 @@ import tensorflow as tf
 
 # 評分閾值配置（可調整）
 SCORE_THRESHOLDS = {
-    'normal': 1,      # score <= 1 為正常人
-    'patient': 3      # score >= 3 為病人
+    'normal': 0,      # score <= 1 為正常人
+    'patient': 10      # score >= 3 為病人
 }
 
 # 實驗類型映射字典（不可修改）
@@ -33,14 +33,14 @@ SELECTION_TYPES = {
 # 類別配置字典（通過設置1/0來控制分類）
 CLASS_CONFIG = {
     'Normal-NoMovement': 1,
-    'Normal-DrySwallow': 0,
-    'Normal-Cracker': 0,
-    'Normal-Jelly': 0,
+    'Normal-DrySwallow': 1,
+    'Normal-Cracker': 1,
+    'Normal-Jelly': 1,
     'Normal-WaterDrinking': 1,
     'Patient-NoMovement': 1,
-    'Patient-DrySwallow': 0,
-    'Patient-Cracker': 0,
-    'Patient-Jelly': 0,
+    'Patient-DrySwallow': 1,
+    'Patient-Cracker': 1,
+    'Patient-Jelly': 1,
     'Patient-WaterDrinking': 1
 }
 

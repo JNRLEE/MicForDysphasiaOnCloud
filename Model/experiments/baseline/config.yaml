@@ -1,5 +1,16 @@
 # Baseline實驗配置
 
+# 數據目錄配置
+data_dir: "/Users/jnrle/Library/CloudStorage/GoogleDrive-jenner.lee.com@gmail.com/My Drive/MicforDysphagia/WavData/ProcessedData"
+original_data_dir: "/Users/jnrle/Library/CloudStorage/GoogleDrive-jenner.lee.com@gmail.com/My Drive/MicforDysphagia/WavData/OriginalData"
+
+# 特徵處理配置
+feature_processing:
+  target_dim: 129  # 根據 example.py 中的 seq_num
+  frame_size: 256
+  overlap: 128
+  fft_size: 256
+
 # 音頻處理配置
 audio:
   sr: 16000
@@ -32,6 +43,11 @@ training:
   outside_test_ratio: 0.2
   validation_ratio: 0.2
   model_save_path: "trained_model.keras"
+  use_class_weights: true
+  learning_rate: 0.001
+  reduce_lr_factor: 0.5
+  reduce_lr_patience: 5
+  min_lr: 1e-6
 
 # 數據集配置
 dataset:

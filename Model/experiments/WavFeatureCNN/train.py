@@ -26,6 +26,22 @@ from sklearn.metrics import confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+# 初始化 TPU
+try:
+    resolver = tf.distribute.cluster_resolver.TPUClusterResolver()
+    tf.config.experimental_connect_to_cluster(resolver)
+    tf.tpu.experimental.initialize_tpu_system(resolver)
+    strategy = tf.distribute.TPUStrategy(resolver)
+    print("成功初始化 TPU")
+    print("TPU 核心數量:", strategy.num_replicas_in_sync)
+except ValueError:
+    strategy = tf.distribute.get_strategy()
+    print("未找到 TPU，使用默認策略:", strategy)
+except Exception as e:
+    print(f"TPU 初始化出錯: {str(e)}")
+    strategy = tf.distribute.get_strategy()
+    print("使用默認策略:", strategy)
+
 # 取專案根目錄的絕對路徑
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -264,61 +280,68 @@ def prepare_data(features, labels, filenames, patient_ids, logger=None):
     val_indices = [i for i, pid in enumerate(patient_ids) if pid in val_patients]
     test_indices = [i for i, pid in enumerate(patient_ids) if pid in test_patients]
     
-    # 使用滑動窗口處理特徵
-    def process_features_with_sliding_windows(indices):
-        """使用滑動窗口處理特徵數據
+    def process_features(indices, features, labels, filenames):
+        """批量處理特徵數據
         
         Args:
             indices: List[int] 數據索引列表
+            features: 原始特徵數據 [batch_size, 2000, 512]
+            labels: 標籤數據
+            filenames: 文件名列表
         
         Returns:
-            Tuple[List[np.ndarray], List[int], List[str]] 處理後的特徵、標籤和文件名
+            Tuple[np.ndarray, np.ndarray, List[str]] 處理後的特徵、標籤和文件名
         """
+        BATCH_SIZE = 32  # 處理批次大小
         processed_features = []
         processed_labels = []
         processed_filenames = []
         
-        for idx in indices:
-            # 獲取當前音頻文件的特徵
-            feature = features[idx]  # [time_steps, feature_dim]
+        # 分批處理數據
+        for i in range(0, len(indices), BATCH_SIZE):
+            batch_indices = indices[i:i + BATCH_SIZE]
+            batch_features = []
             
-            # 使用滑動窗口分割特徵
-            windows = []
-            window_size = 129  # 約2.58秒
-            stride = 64      # 50%重疊
+            for idx in batch_indices:
+                # 獲取當前音頻文件的特徵 [2000, 512]
+                feature = features[idx]
+                batch_features.append(feature)
             
-            for start in range(0, len(feature) - window_size + 1, stride):
-                end = start + window_size
-                window = feature[start:end]
-                windows.append(window)
+            # 將批次數據轉換為numpy數組
+            batch_features = np.array(batch_features, dtype=np.float32)
             
-            if windows:  # 確保有窗口
-                windows = np.array(windows)  # [num_windows, window_size, feature_dim]
-                processed_features.append(windows)
-                processed_labels.append(labels[idx])
-                processed_filenames.append(filenames[idx])
+            # 標準化特徵
+            mean = np.mean(batch_features, axis=(1, 2), keepdims=True)
+            std = np.std(batch_features, axis=(1, 2), keepdims=True) + 1e-8
+            batch_features = (batch_features - mean) / std
+            
+            # 添加到處理後的數據中
+            processed_features.append(batch_features)
+            processed_labels.extend([labels[idx] for idx in batch_indices])
+            processed_filenames.extend([filenames[idx] for idx in batch_indices])
+            
+            # 清理記憶體
+            del batch_features
+            tf.keras.backend.clear_session()
+        
+        # 合併所有批次
+        processed_features = np.concatenate(processed_features, axis=0)
+        processed_labels = np.array(processed_labels, dtype=np.int32)
         
         return processed_features, processed_labels, processed_filenames
     
     # 處理訓練、驗證和測試集
-    train_features, train_labels, train_filenames = process_features_with_sliding_windows(train_indices)
-    val_features, val_labels, val_filenames = process_features_with_sliding_windows(val_indices)
-    test_features, test_labels, test_filenames = process_features_with_sliding_windows(test_indices)
+    train_data = process_features(train_indices, features, labels, filenames)
+    val_data = process_features(val_indices, features, labels, filenames)
+    test_data = process_features(test_indices, features, labels, filenames)
     
     if logger:
-        logger.info(f"訓練集: {len(train_features)} 個音頻文件")
-        logger.info(f"驗證集: {len(val_features)} 個音頻文件")
-        logger.info(f"測試集: {len(test_features)} 個音頻文件")
-        
-        # 顯示每個音頻文件的窗口數量
-        logger.info("\n訓練集窗口數量:")
-        for i, (feat, fname) in enumerate(zip(train_features, train_filenames)):
-            logger.info(f"  文件 {fname}: {len(feat)} 個窗口")
+        logger.info(f"訓練集: {len(train_data[0])} 個樣本")
+        logger.info(f"驗證集: {len(val_data[0])} 個樣本")
+        logger.info(f"測試集: {len(test_data[0])} 個樣本")
+        logger.info(f"特徵維度: {train_data[0].shape[1]}")
     
     # 返回處理後的數據集和受試者分組
-    train_data = (train_features, train_labels, train_filenames)
-    val_data = (val_features, val_labels, val_filenames)
-    test_data = (test_features, test_labels, test_filenames)
     patient_splits = (list(train_patients), list(val_patients), list(test_patients))
     
     return train_data, val_data, test_data, patient_splits
@@ -694,106 +717,70 @@ def train_model(model, train_data, val_data, config, logger):
     
     Args:
         model: 模型實例
-        train_data: 元組 (train_features, train_labels, train_filenames)
-        val_data: 元組 (val_features, val_labels, val_filenames)
+        train_data: 訓練數據元組 (features, labels, filenames)
+        val_data: 驗證數據元組 (features, labels, filenames)
         config: 配置字典
         logger: 日誌記錄器
     
     Returns:
         history: 訓練歷史
-        val_results: 驗證集評估結果
+        val_results: 驗證結果
     """
-    # 解包數據
-    train_features, train_labels, train_filenames = train_data
-    val_features, val_labels, val_filenames = val_data
-    
-    # 設置保存目錄
-    save_dir = setup_save_dir()
-    
-    # 編譯模型
-    logger.info("編譯模型...")
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=config['training']['learning_rate']),
-        loss='sparse_categorical_crossentropy',
-        metrics=['accuracy']
-    )
-    
-    # 創建數據生成器
-    train_generator = SequentialBatchGenerator(
-        train_features,
-        train_labels,
-        config['training']['batch_size'],
-        shuffle=True
-    )
-    
-    val_generator = SequentialBatchGenerator(
-        val_features,
-        val_labels,
-        config['training']['batch_size'],
-        shuffle=False
-    )
-    
-    # 設算類別權重以處理不平衡數據
-    unique_labels = np.unique(train_labels)
-    class_weights = {}
-    total_samples = len(train_labels)
-    n_classes = len(unique_labels)
-    
-    for label in unique_labels:
-        class_count = np.sum(train_labels == label)
-        weight = (1.0 / class_count) * (total_samples / n_classes)
-        class_weights[label] = weight
-    
-    logger.info("\n=== 類別權重 ===")
-    for label, weight in class_weights.items():
-        logger.info(f"類別 {label}: {weight:.4f}")
-    
-    # 設置回調函數
-    callbacks = [
-        tf.keras.callbacks.ModelCheckpoint(
-            filepath=os.path.join(save_dir, 'best_model.keras'),
-            save_best_only=config['training'].get('save_best_only', True),
-            monitor=config['training'].get('monitor_metric', 'val_loss'),
-            mode='min'
-        ),
-        tf.keras.callbacks.EarlyStopping(
-            monitor='val_loss',
-            patience=config['training']['early_stopping_patience'],
-            restore_best_weights=True
-        ),
-        tf.keras.callbacks.ReduceLROnPlateau(
-            monitor='val_loss',
-            factor=config['training']['reduce_lr_factor'],
-            patience=config['training']['reduce_lr_patience'],
-            min_lr=config['training']['min_lr']
-        ),
-        TrainingProgressCallback(logger)
-    ]
-    
-    # 訓練模型
-    logger.info("開始訓練模型...")
-    history = model.fit(
-        train_generator,
-        validation_data=val_generator,
-        epochs=config['training']['epochs'],
-        callbacks=callbacks,
-        class_weight=class_weights,
-        verbose=config['training'].get('verbose', 1)
-    )
-    
-    # 評估驗證集
-    logger.info("\n=== 驗證集評估 ===")
-    val_results = evaluate_model(
-        model,
-        val_features,
-        val_labels,
-        val_filenames,
-        save_dir,
-        logger
-    )
-    logger.info(f"驗證集準確率: {val_results['accuracy']:.4f}")
-    
-    return history, val_results
+    try:
+        # 解包數據
+        train_features, train_labels = train_data[0], train_data[1]
+        val_features, val_labels = val_data[0], val_data[1]
+        
+        # 獲取批次大小
+        batch_size = config['training']['batch_size']
+        
+        # 創建數據集
+        train_dataset = tf.data.Dataset.from_tensor_slices(
+            (train_features, train_labels)
+        ).shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+        
+        val_dataset = tf.data.Dataset.from_tensor_slices(
+            (val_features, val_labels)
+        ).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+        
+        # 設置回調函數
+        callbacks = [
+            tf.keras.callbacks.ModelCheckpoint(
+                filepath=os.path.join(setup_save_dir(), 'best_model.keras'),
+                save_best_only=True,
+                monitor='val_loss',
+                mode='min'
+            ),
+            tf.keras.callbacks.EarlyStopping(
+                monitor='val_loss',
+                patience=config['training']['early_stopping_patience'],
+                restore_best_weights=True
+            ),
+            tf.keras.callbacks.ReduceLROnPlateau(
+                monitor='val_loss',
+                factor=config['training']['reduce_lr_factor'],
+                patience=config['training']['reduce_lr_patience'],
+                min_lr=config['training']['min_lr']
+            ),
+            TrainingProgressCallback(logger)
+        ]
+        
+        # 開始訓練
+        logger.info(f"開始訓練模型... (批次大小: {batch_size})")
+        history = model.fit(
+            train_dataset,
+            validation_data=val_dataset,
+            epochs=config['training']['epochs'],
+            callbacks=callbacks,
+            verbose=config['training'].get('verbose', 1)
+        )
+        
+        return history, None
+        
+    except Exception as e:
+        logger.error(f"訓練過程中出錯: {str(e)}")
+        logger.error("Traceback:", exc_info=True)
+        raise
 
 def load_data() -> Tuple[np.ndarray, np.ndarray, List[str], List[str]]:
     """加載數據並返回特徵和標籤
@@ -837,8 +824,12 @@ def main():
             original_data_dir=config['original_data_dir']
         )
         features, labels, filenames, patient_ids = data_loader.load_data()
+        
+        # 轉置特徵以適應1D CNN的輸入格式 [batch_size, 2000, 512]
+        features = np.transpose(features, (0, 2, 1))
+        
         logger.info(f"加載了 {len(features)} 個樣本")
-        logger.info(f"合併後的特徵形狀: {features.shape}")
+        logger.info(f"特徵形狀: {features.shape}")
         logger.info(f"標籤形狀: {labels.shape}")
         logger.info(f"文件名數量: {len(filenames)}")
         logger.info(f"受試者數量: {len(set(patient_ids))}")
@@ -853,32 +844,42 @@ def main():
             logger=logger
         )
         
-        # 解包數據
-        train_features, train_labels, train_filenames = train_data
-        val_features, val_labels, val_filenames = val_data
-        test_features, test_labels, test_filenames = test_data
-        train_patients, val_patients, test_patients = patient_splits
-        
         # 打印詳細的數據集統計信息
         print_dataset_statistics(
-            train_labels, val_labels, test_labels,
-            train_patients, val_patients, test_patients,
+            train_data[1], val_data[1], test_data[1],
+            patient_splits[0], patient_splits[1], patient_splits[2],
             patient_ids, logger
         )
         
         # 設置保存目錄
         save_dir = Path(setup_save_dir())
-        save_split_info(train_patients, val_patients, test_patients, save_dir)
-        
-        # 創建和編譯模型
-        model = AutoencoderModel(config['model'])
-        
-        # 編譯模型
-        model.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=config['training']['learning_rate']),
-            loss='categorical_crossentropy',
-            metrics=['accuracy']
+        save_split_info(
+            patient_splits[0], patient_splits[1], patient_splits[2],
+            save_dir
         )
+        
+        with strategy.scope():
+            # 創建模型
+            model = AutoencoderModel(config['model'])
+            
+            # 構建模型
+            logger.info("構建模型...")
+            model.build_model(input_shape=(None, 2000, 512))
+            
+            # 編譯模型
+            logger.info("編譯模型...")
+            model.compile(
+                optimizer=tf.keras.optimizers.Adam(
+                    learning_rate=config['training']['learning_rate']
+                ),
+                loss='sparse_categorical_crossentropy',
+                metrics=['accuracy']
+            )
+            
+            # 打印模型摘要
+            logger.info("\n=== 模型架構 ===")
+            model.summary(print_fn=logger.info)
+            logger.info("==================\n")
         
         # 訓練模型
         history, val_results = train_model(
@@ -888,18 +889,6 @@ def main():
             config,
             logger
         )
-        
-        # 評估測試集
-        logger.info("\n=== 測試集評估 ===")
-        test_results = evaluate_model(
-            model,
-            test_features,
-            test_labels,
-            test_filenames,
-            str(save_dir),
-            logger
-        )
-        logger.info(f"測試集準確率: {test_results['accuracy']:.4f}")
         
         # 保存訓練歷史
         save_history(history, str(save_dir))

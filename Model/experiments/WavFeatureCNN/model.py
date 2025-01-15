@@ -1,127 +1,84 @@
 """
-此模型用於吞嚥聲音分類，使用滑動窗口處理音頻特徵
-功能：
-1. 輸入特徵維度為 [batch_size, window_size, feature_dim]
-2. 使用一維卷積神經網絡提取特徵
-3. 包含批量正規化和 Dropout 以防止過擬合
+此代碼實現了基於1D CNN的音頻特徵分類模型，
+使用一維卷積來捕捉時間序列特徵。
 """
 
 import tensorflow as tf
 from Model.base.class_config import get_num_classes
 
 class AutoencoderModel(tf.keras.Model):
-    """自編碼器模型"""
-    
-    def __init__(self, config: dict):
-        """
-        初始化模型
-        
-        Args:
-            config: 模型配置字典
-        """
+    def __init__(self, config):
         super().__init__()
         self.config = config
         
-        # 確保所有必要的配置都存在
-        required_configs = [
-            'window_size', 'target_dim',
-            'filters', 'kernel_sizes', 'pool_sizes',
-            'dropout_rate', 'use_batch_norm'
-        ]
+        # 定義所有層
+        self.layers_list = []
         
-        for cfg in required_configs:
-            if cfg not in config:
-                raise ValueError(f"配置中缺少必要參數: {cfg}")
+        # 第一個卷積塊
+        self.layers_list.extend([
+            tf.keras.layers.Conv1D(32, 5, padding='same'),
+            tf.keras.layers.BatchNormalization(),
+            tf.keras.layers.Activation('relu'),
+            tf.keras.layers.MaxPooling1D(4)
+        ])
         
-        # 保存輸入形狀為內部變量
-        self._model_input_shape = (
-            config['window_size'],
-            config['target_dim']
-        )
+        # 第二個卷積塊
+        self.layers_list.extend([
+            tf.keras.layers.Conv1D(64, 5, padding='same'),
+            tf.keras.layers.BatchNormalization(),
+            tf.keras.layers.Activation('relu'),
+            tf.keras.layers.MaxPooling1D(4)
+        ])
         
-        # CNN特徵提取器
-        self.feature_extractor = tf.keras.Sequential([
-            # 輸入層，處理 [batch_size, window_size, feature_dim] 形狀的數據
-            tf.keras.layers.Input(shape=self._model_input_shape),
-            
-            # 第一個卷積塊
-            tf.keras.layers.Conv1D(
-                filters=config['filters'][0], 
-                kernel_size=config['kernel_sizes'][0],
-                activation='relu', 
-                padding='same'
-            ),
+        # 第三個卷積塊
+        self.layers_list.extend([
+            tf.keras.layers.Conv1D(128, 5, padding='same'),
             tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.MaxPooling1D(pool_size=config['pool_sizes'][0]),
-            tf.keras.layers.Dropout(config['dropout_rate']),
-            
-            # 第二個卷積塊
-            tf.keras.layers.Conv1D(
-                filters=config['filters'][1], 
-                kernel_size=config['kernel_sizes'][1], 
-                activation='relu', 
-                padding='same'
-            ),
-            tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.MaxPooling1D(pool_size=config['pool_sizes'][1]),
-            tf.keras.layers.Dropout(config['dropout_rate']),
-            
-            # 第三個卷積塊
-            tf.keras.layers.Conv1D(
-                filters=config['filters'][2], 
-                kernel_size=config['kernel_sizes'][2], 
-                activation='relu', 
-                padding='same'
-            ),
-            tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.MaxPooling1D(pool_size=config['pool_sizes'][2]),
-            tf.keras.layers.Dropout(config['dropout_rate']),
-            
-            # 全局池化
+            tf.keras.layers.Activation('relu'),
+            tf.keras.layers.MaxPooling1D(4)
+        ])
+        
+        # 全局池化和分類
+        self.layers_list.extend([
             tf.keras.layers.GlobalAveragePooling1D(),
-            
-            # 分類器
-            tf.keras.layers.Dense(256, activation='relu'),
-            tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.Dropout(config['dropout_rate']),
-            
-            tf.keras.layers.Dense(128, activation='relu'),
-            tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.Dropout(config['dropout_rate']),
-            
+            tf.keras.layers.Dropout(0.5),
             tf.keras.layers.Dense(get_num_classes(), activation='softmax')
         ])
-
+    
     def call(self, inputs, training=False):
-        """
-        前向傳播
+        x = inputs
+        
+        # 依序通過每一層
+        for layer in self.layers_list:
+            if isinstance(layer, tf.keras.layers.BatchNormalization) or \
+               isinstance(layer, tf.keras.layers.Dropout):
+                x = layer(x, training=training)
+            else:
+                x = layer(x)
+        
+        return x
+    
+    def build_model(self, input_shape):
+        """構建模型
         
         Args:
-            inputs: 輸入張量，形狀為 [batch_size, window_size, feature_dim]
-                   或者是一個張量的元組
-            training: 是否處於訓練模式
-            
-        Returns:
-            輸出張量，形狀為 [batch_size, num_classes]
+            input_shape: 輸入形狀，例如 (None, 2000, 512)
         """
-        # 如果輸入是元組，取第一�元素
-        if isinstance(inputs, tuple):
-            inputs = inputs[0]
+        # 創建一個示例輸入來構建模型
+        inputs = tf.keras.Input(shape=input_shape[1:])
+        outputs = self.call(inputs)
         
-        # 確保輸入維度正確
-        if len(inputs.shape) == 4:
-            # 如果輸入是 4D，移除 channel 維度
-            inputs = tf.squeeze(inputs, axis=-1)
-            
-        if len(inputs.shape) != 3:
-            raise ValueError(
-                f"輸入維度不正確，期望為3維 (batch_size, window_size, feature_dim)，"
-                f"實際為{len(inputs.shape)}維，形狀為{inputs.shape}"
-            )
-            
-        return self.feature_extractor(inputs, training=training)
+        # 創建函數式模型
+        self.model = tf.keras.Model(inputs=inputs, outputs=outputs)
         
-    def build_graph(self):
-        """構建計算圖，用於可視化模型結構"""
-        x = tf.keras.Input(shape=self._model_input_shape)
-        return tf.keras.Model(inputs=[x], outputs=self.call(x))
+        # 設置模型已構建標誌
+        self.built = True
+        
+        return self.model
+    
+    def summary(self, *args, **kwargs):
+        """顯示模型摘要"""
+        if hasattr(self, 'model'):
+            return self.model.summary(*args, **kwargs)
+        else:
+            raise ValueError("模型尚未構建，請先調用 build_model()")

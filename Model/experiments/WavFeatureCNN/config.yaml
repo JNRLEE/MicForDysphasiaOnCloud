@@ -27,31 +27,28 @@ audio:
 
 # 模型結構配置
 model:
-  window_size: 129
-  target_dim: 2000
-  filters: [64, 128, 256]  # 三個卷積層的濾波器數量
-  kernel_sizes: [7, 5, 3]  # 三個卷積層的核大小
-  pool_sizes: [2, 2, 2]    # 三個池化層的池化大小
+  input_dim: 1024000  # 512 * 2000 = 1,024,000
+  fc_layers: [512, 256, 128]  # 三層全連接層的神經元數量
   dropout_rate: 0.5
   use_batch_norm: true
 
 # 訓練配置
 training:
-  batch_size: 32
+  batch_size: 128  # 增加批次大小以充分利用TPU
   epochs: 30
   learning_rate: 0.001
   early_stopping_patience: 10
   reduce_lr_patience: 5
   reduce_lr_factor: 0.5
   min_lr: 0.00001
-  verbose: 1  # 訓練過程中的輸出詳細程度
+  verbose: 1
   save_best_only: true
   monitor_metric: "val_loss"
-  use_multiprocessing: true
-  workers: 4
-  model_save_path: "saved_models/WavFeatureCNN"  # 模型保存路徑
-  validation_split: 0.2  # 驗證集比例
-  test_split: 0.1  # 測試集比例
+  use_multiprocessing: false  # TPU 環境下關閉多進程
+  workers: 1  # TPU 環境下使用單個工作進程
+  model_save_path: "saved_models/WavFeatureCNN"
+  validation_split: 0.2
+  test_split: 0.1
 
 # 數據集配置
 dataset:
