@@ -35,13 +35,13 @@ CLASS_CONFIG = {
     'Normal-NoMovement': 1,
     'Normal-DrySwallow': 1,
     'Normal-Cracker': 1,
-    'Normal-Jelly': 1,
-    'Normal-WaterDrinking': 1,
-    'Patient-NoMovement': 1,
+    'Normal-Jelly': 0,
+    'Normal-WaterDrinking': 0,
+    'Patient-NoMovement': 0,
     'Patient-DrySwallow': 1,
-    'Patient-Cracker': 1,
-    'Patient-Jelly': 1,
-    'Patient-WaterDrinking': 1
+    'Patient-Cracker': 0,
+    'Patient-Jelly': 0,
+    'Patient-WaterDrinking': 0
 }
 
 def get_active_classes() -> List[str]:
