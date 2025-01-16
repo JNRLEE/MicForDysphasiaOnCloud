@@ -86,19 +86,14 @@ CONFIG = {
         'num_classes': 4
     },
     'training': {
-        'batch_size': 16,
-        'epochs': 100,
+        'batch_size': 8,  # 調整為較小的批次大小
+        'epochs': 50,     # 增加訓練輪數
         'learning_rate': 0.001,
         'min_lr': 1e-6,
-        'patience': 15,
+        'patience': 10,   # 增加早停的耐心值
         'factor': 0.5,
         'verbose': 1,
-        'class_weights': {
-            0: 3.0,  # NoMovement
-            1: 1.0,  # DrySwallow
-            2: 1.5,  # Cracker
-            3: 1.2   # Jelly
-        }
+        'class_weights': None  # 將根據數據分布自動計算
     },
     'paths': {
         'save_dir': 'logs',
@@ -188,84 +183,43 @@ def get_active_class_names():
     return [k for k, v in CLASS_CONFIG.items() if v == 1]
 
 class TransposeLayer(tf.keras.layers.Layer):
-    """轉置輸入張量的自定義層"""
+    """轉置層，用於調整輸入特徵的維度順序"""
     def call(self, inputs):
-        return tf.transpose(inputs, perm=[0, 2, 1])
+        return tf.transpose(inputs, [0, 2, 1])
 
 class WavFeatureCNN(tf.keras.Model):
-    """
-    改進的WavFeatureCNN模型，使用更深的卷積層和殘差連接
-    """
+    """簡化版的全連接層分類模型"""
     def __init__(self, config):
         super(WavFeatureCNN, self).__init__()
         self.config = config
         
-        # 轉置層
+        # 轉置層用於調整輸入維度
         self.transpose_layer = TransposeLayer()
         
-        # 卷積層組1
-        self.conv1a = tf.keras.layers.Conv1D(32, 3, activation='relu', padding='same')
-        self.conv1b = tf.keras.layers.Conv1D(32, 3, activation='relu', padding='same')
-        self.pool1 = tf.keras.layers.MaxPooling1D(2)
-        self.bn1 = tf.keras.layers.BatchNormalization()
-        self.dropout1 = tf.keras.layers.Dropout(0.3)
+        # 展平層
+        self.flatten = tf.keras.layers.Flatten()
         
-        # 卷積層組2
-        self.conv2a = tf.keras.layers.Conv1D(64, 3, activation='relu', padding='same')
-        self.conv2b = tf.keras.layers.Conv1D(64, 3, activation='relu', padding='same')
-        self.pool2 = tf.keras.layers.MaxPooling1D(2)
-        self.bn2 = tf.keras.layers.BatchNormalization()
+        # 全連接層
+        self.dense1 = tf.keras.layers.Dense(512, activation='relu')
+        self.dropout1 = tf.keras.layers.Dropout(0.5)
+        
+        self.dense2 = tf.keras.layers.Dense(128, activation='relu')
         self.dropout2 = tf.keras.layers.Dropout(0.3)
         
-        # 卷積層組3
-        self.conv3a = tf.keras.layers.Conv1D(128, 3, activation='relu', padding='same')
-        self.conv3b = tf.keras.layers.Conv1D(128, 3, activation='relu', padding='same')
-        self.pool3 = tf.keras.layers.MaxPooling1D(2)
-        self.bn3 = tf.keras.layers.BatchNormalization()
-        self.dropout3 = tf.keras.layers.Dropout(0.3)
-        
-        # 全局平均池化
-        self.global_pool = tf.keras.layers.GlobalAveragePooling1D()
-        
-        # 全連接層
-        self.dense1 = tf.keras.layers.Dense(256, activation='relu')
-        self.dropout4 = tf.keras.layers.Dropout(0.5)
-        self.dense2 = tf.keras.layers.Dense(config['model']['num_classes'])
-        
+        self.dense3 = tf.keras.layers.Dense(4)  # 輸出層，4個類別
+
     def call(self, inputs, training=False):
-        # 轉置輸入
         x = self.transpose_layer(inputs)
+        x = self.flatten(x)
         
-        # 卷積層組1
-        x1 = self.conv1a(x)
-        x1 = self.conv1b(x1)
-        x1 = self.pool1(x1)
-        x1 = self.bn1(x1, training=training)
-        x1 = self.dropout1(x1, training=training)
-        
-        # 卷積層組2
-        x2 = self.conv2a(x1)
-        x2 = self.conv2b(x2)
-        x2 = self.pool2(x2)
-        x2 = self.bn2(x2, training=training)
-        x2 = self.dropout2(x2, training=training)
-        
-        # 卷積層組3
-        x3 = self.conv3a(x2)
-        x3 = self.conv3b(x3)
-        x3 = self.pool3(x3)
-        x3 = self.bn3(x3, training=training)
-        x3 = self.dropout3(x3, training=training)
-        
-        # 全局平均池化
-        x = self.global_pool(x3)
-        
-        # 全連接層
         x = self.dense1(x)
-        x = self.dropout4(x, training=training)
-        x = self.dense2(x)
+        x = self.dropout1(x, training=training)
         
-        return tf.nn.softmax(x)
+        x = self.dense2(x)
+        x = self.dropout2(x, training=training)
+        
+        x = self.dense3(x)
+        return x
 
     def train_step(self, data):
         x, y = data
@@ -293,8 +247,11 @@ class WavFeatureCNN(tf.keras.Model):
         
         # 編譯模型
         self.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=CONFIG['training']['learning_rate']),
-            loss='sparse_categorical_crossentropy',
+            optimizer=tf.keras.optimizers.Adam(
+                learning_rate=CONFIG['training']['learning_rate'],
+                clipnorm=1.0  # 添加梯度裁剪
+            ),
+            loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
             metrics=['accuracy']
         )
         
@@ -402,16 +359,6 @@ def evaluate_model(model, X_test, y_test, logger, config):
 def prepare_data(features, labels, filenames, patient_ids, logger):
     """
     準備訓練、驗證和測試數據集
-    
-    Args:
-        features (np.ndarray): 特徵數據
-        labels (np.ndarray): 標籤數據
-        filenames (list): 文件名列表
-        patient_ids (list): 病人ID列表
-        logger (logging.Logger): 日誌記錄器
-    
-    Returns:
-        tuple: 包含訓練、驗證和測試數據的元組
     """
     # 確保filenames是字符串列表
     filenames = [str(f) for f in filenames]
@@ -449,6 +396,19 @@ def prepare_data(features, labels, filenames, patient_ids, logger):
     y_test = labels[test_idx]
     test_filenames = [filenames[i] for i in test_idx]
     
+    # 計算類別權重
+    unique_labels = np.unique(y_train)
+    n_samples = len(y_train)
+    n_classes = len(unique_labels)
+    class_weights = {}
+    
+    for label in unique_labels:
+        class_count = np.sum(y_train == label)
+        weight = (1.0 / class_count) * (n_samples / n_classes)
+        class_weights[label] = weight
+    
+    CONFIG['training']['class_weights'] = class_weights
+    
     # 記錄分割信息
     logger.info("\n=== 數據分割信息 ===")
     logger.info(f"訓練集:\n  - 樣本數: {len(X_train)}\n  - 病人數: {len(train_patients)}")
@@ -460,11 +420,17 @@ def prepare_data(features, labels, filenames, patient_ids, logger):
         unique, counts = np.unique(y, return_counts=True)
         logger.info(f"\n{name} 類別分布:")
         for u, c in zip(unique, counts):
-            logger.info(f"  - {u}: {c}")
+            class_name = list(CONFIG['dataset']['selection_types'].keys())[u]
+            logger.info(f"  - {class_name}: {c}")
     
     log_class_dist(y_train, "訓練集")
     log_class_dist(y_val, "驗證集")
     log_class_dist(y_test, "測試集")
+    
+    logger.info("\n類別權重:")
+    for label, weight in class_weights.items():
+        class_name = list(CONFIG['dataset']['selection_types'].keys())[label]
+        logger.info(f"  - {class_name}: {weight:.4f}")
     
     return (X_train, y_train, train_filenames), \
            (X_val, y_val, val_filenames), \
@@ -623,57 +589,73 @@ def load_data(config, logger):
     
     return features, labels, filenames_list, patient_ids_list
 
-def train_model(model, train_data, val_data, logger, config):
+def train_model(model, train_data, val_data, test_data, config):
     """
-    訓練模型並返回訓練歷史
+    訓練模型的主要函數
     """
-    X_train, y_train = train_data
-    X_val, y_val = val_data
+    # 解包訓練數據
+    train_features, train_labels, _ = train_data
+    val_features, val_labels, _ = val_data
+    test_features, test_labels, _ = test_data
+    
+    # 設置批次大小
+    batch_size = config['training']['batch_size']
+    
+    # 設置訓練參數
+    epochs = config['training']['epochs']
+    patience = config['training']['patience']
+    min_delta = 0.001
+    
+    # 創建數據集
+    train_dataset = tf.data.Dataset.from_tensor_slices((train_features, train_labels))
+    train_dataset = train_dataset.shuffle(buffer_size=len(train_features))
+    train_dataset = train_dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+    
+    val_dataset = tf.data.Dataset.from_tensor_slices((val_features, val_labels))
+    val_dataset = val_dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+    
+    # 創建日誌目錄
+    log_dir = os.path.join('logs', 'tensorboard', datetime.now().strftime("%Y%m%d-%H%M%S"))
+    model_dir = os.path.join('logs', 'models')
+    os.makedirs(log_dir, exist_ok=True)
+    os.makedirs(model_dir, exist_ok=True)
     
     # 設置回調函數
     callbacks = [
+        tf.keras.callbacks.ModelCheckpoint(
+            filepath=os.path.join(model_dir, 'best_model.keras'),
+            save_best_only=True,
+            monitor='val_loss',
+            mode='min',
+            verbose=1
+        ),
         tf.keras.callbacks.EarlyStopping(
             monitor='val_loss',
-            patience=config['training']['patience'],
+            patience=patience,
+            min_delta=min_delta,
             restore_best_weights=True,
             verbose=1
         ),
         tf.keras.callbacks.ReduceLROnPlateau(
             monitor='val_loss',
-            factor=config['training']['factor'],
+            factor=0.5,
             patience=5,
             min_lr=config['training']['min_lr'],
             verbose=1
         ),
-        tf.keras.callbacks.ModelCheckpoint(
-            filepath=os.path.join(config['paths']['model_dir'], 'best_model.keras'),
-            monitor='val_loss',
-            save_best_only=True,
-            mode='min',
-            verbose=1
-        ),
         tf.keras.callbacks.TensorBoard(
-            log_dir=config['paths']['tensorboard_dir'],
-            histogram_freq=1
+            log_dir=log_dir,
+            histogram_freq=1,
+            update_freq='epoch'
         )
     ]
     
-    # 編譯模型
-    optimizer = tf.keras.optimizers.Adam(learning_rate=config['training']['learning_rate'])
-    loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False)
-    metrics = ['accuracy']
-    
-    model.compile(optimizer=optimizer, loss=loss, metrics=metrics)
-    
     # 訓練模型
-    logger.info(f"開始訓練模型... (批次大小: {config['training']['batch_size']})")
     history = model.fit(
-        X_train, y_train,
-        batch_size=config['training']['batch_size'],
-        epochs=config['training']['epochs'],
-        validation_data=(X_val, y_val),
+        train_dataset,
+        epochs=epochs,
+        validation_data=val_dataset,
         callbacks=callbacks,
-        class_weight=config['training']['class_weights'],
         verbose=1
     )
     
@@ -684,74 +666,88 @@ def main():
     # 設置日誌
     logger = setup_logger()
     
-    # 設置分散式策略
-    strategy = tf.distribute.get_strategy()
-    logger.info(f"使用默認策略: {strategy}")
+    # 設置GPU記憶體增長
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        try:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            strategy = tf.distribute.MirroredStrategy()
+            logger.info("使用 GPU 策略")
+        except RuntimeError as e:
+            logger.warning(f"GPU設置失敗: {e}")
+            strategy = tf.distribute.get_strategy()
+            logger.info("使用默認策略")
+    else:
+        strategy = tf.distribute.get_strategy()
+        logger.info("使用默認策略")
     
-    # 加載數據
-    features, labels, filenames, patient_ids = load_data(CONFIG, logger)
-    
-    # 數據分割
-    train_data, val_data, test_data, patient_splits = prepare_data(
-        features, labels, filenames, patient_ids, logger
-    )
-    
-    # 構建模型
-    logger.info("構建模型...")
-    with strategy.scope():
-        model = WavFeatureCNN(CONFIG)
-        model.build(input_shape=(None, CONFIG['model']['input_shape'][0], CONFIG['model']['input_shape'][1]))
-        model.summary()
-    
-    # 編譯模型
-    logger.info("編譯模型...")
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=CONFIG['training']['learning_rate']),
-        loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-        metrics=['accuracy']
-    )
-    
-    # 創建回調函數
-    callbacks = [
-        tf.keras.callbacks.EarlyStopping(
-            monitor='val_loss',
-            patience=CONFIG['training']['patience'],
-            restore_best_weights=True,
-            verbose=1
-        ),
-        tf.keras.callbacks.ReduceLROnPlateau(
-            monitor='val_loss',
-            factor=0.5,
-            patience=5,
-            min_lr=CONFIG['training']['min_lr'],
-            verbose=1
-        ),
-        tf.keras.callbacks.ModelCheckpoint(
-            filepath=os.path.join(CONFIG['paths']['model_dir'], 'best_model.keras'),
-            monitor='val_loss',
-            save_best_only=True,
-            mode='min',
-            verbose=1
-        ),
-        tf.keras.callbacks.TensorBoard(
-            log_dir=CONFIG['paths']['tensorboard_dir'],
-            histogram_freq=1
-        )
-    ]
+    logger.info(f"使用的策略: {strategy}")
     
     try:
+        # 加載數據
+        features, labels, filenames, patient_ids = load_data(CONFIG, logger)
+        
+        # 數據分割
+        train_data, val_data, test_data, patient_splits = prepare_data(
+            features, labels, filenames, patient_ids, logger
+        )
+        
+        # 構建模型
+        logger.info("構建模型...")
+        with strategy.scope():
+            model = WavFeatureCNN(CONFIG)
+            
+            # 編譯模型
+            logger.info("編譯模型...")
+            model.compile(
+                optimizer=tf.keras.optimizers.Adam(
+                    learning_rate=CONFIG['training']['learning_rate'],
+                    clipnorm=1.0
+                ),
+                loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+                metrics=['accuracy']
+            )
+        
         # 訓練模型
-        logger.info(f"開始訓練模型... (批次大小: {CONFIG['training']['batch_size']})")
+        logger.info("開始訓練...")
         X_train, y_train, _ = train_data
         X_val, y_val, _ = val_data
         
         history = model.fit(
-            X_train, y_train,
+            X_train,
+            y_train,
             batch_size=CONFIG['training']['batch_size'],
             epochs=CONFIG['training']['epochs'],
             validation_data=(X_val, y_val),
-            callbacks=callbacks,
-            verbose=CONFIG['training']['verbose']
+            callbacks=[
+                tf.keras.callbacks.ModelCheckpoint(
+                    filepath=os.path.join(CONFIG['paths']['model_dir'], 'best_model.keras'),
+                    save_best_only=True,
+                    monitor='val_loss',
+                    mode='min',
+                    verbose=1
+                ),
+                tf.keras.callbacks.EarlyStopping(
+                    monitor='val_loss',
+                    patience=CONFIG['training']['patience'],
+                    restore_best_weights=True,
+                    verbose=1
+                ),
+                tf.keras.callbacks.ReduceLROnPlateau(
+                    monitor='val_loss',
+                    factor=0.5,
+                    patience=5,
+                    min_lr=CONFIG['training']['min_lr'],
+                    verbose=1
+                ),
+                tf.keras.callbacks.TensorBoard(
+                    log_dir=os.path.join(CONFIG['paths']['tensorboard_dir'],
+                                       datetime.now().strftime("%Y%m%d-%H%M%S")),
+                    histogram_freq=1
+                )
+            ],
+            verbose=1
         )
         
         # 評估模型
@@ -761,7 +757,6 @@ def main():
         
     except Exception as e:
         logger.error(f"訓練過程中出錯: {str(e)}")
-        import traceback
         logger.error(f"Traceback:\n{traceback.format_exc()}")
         raise e
 
