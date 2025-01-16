@@ -189,37 +189,59 @@ class TransposeLayer(tf.keras.layers.Layer):
 
 class WavFeatureCNN(tf.keras.Model):
     """簡化版的全連接層分類模型"""
-    def __init__(self, config):
-        super(WavFeatureCNN, self).__init__()
-        self.config = config
+    
+    def __init__(self, config=None):
+        """初始化模型
         
-        # 轉置層用於調整輸入維度
-        self.transpose_layer = TransposeLayer()
+        Args:
+            config: 配置字典，包含模型參數
+        """
+        super(WavFeatureCNN, self).__init__()
+        
+        # 轉置層
+        self.transpose = TransposeLayer()
         
         # 展平層
         self.flatten = tf.keras.layers.Flatten()
         
         # 全連接層
-        self.dense1 = tf.keras.layers.Dense(512, activation='relu')
-        self.dropout1 = tf.keras.layers.Dropout(0.5)
+        self.dense1 = tf.keras.layers.Dense(64, activation='relu', dtype=tf.float32)
+        self.dropout1 = tf.keras.layers.Dropout(0.3, dtype=tf.float32)
         
-        self.dense2 = tf.keras.layers.Dense(128, activation='relu')
-        self.dropout2 = tf.keras.layers.Dropout(0.3)
+        self.dense2 = tf.keras.layers.Dense(32, activation='relu', dtype=tf.float32)
+        self.dropout2 = tf.keras.layers.Dropout(0.3, dtype=tf.float32)
         
-        self.dense3 = tf.keras.layers.Dense(4)  # 輸出層，4個類別
-
+        # 輸出層
+        self.output_dense = tf.keras.layers.Dense(4, dtype=tf.float32)  # 4個類別
+        
     def call(self, inputs, training=False):
-        x = self.transpose_layer(inputs)
+        """前向傳播
+        
+        Args:
+            inputs: 輸入張量
+            training: 是否處於訓練模式
+            
+        Returns:
+            模型輸出
+        """
+        # 確保輸入是float32類型
+        x = tf.cast(inputs, tf.float32)
+        
+        # 轉置處理
+        x = self.transpose(x)
+        
+        # 展平
         x = self.flatten(x)
         
+        # 全連接層
         x = self.dense1(x)
         x = self.dropout1(x, training=training)
         
         x = self.dense2(x)
         x = self.dropout2(x, training=training)
         
-        x = self.dense3(x)
-        return x
+        # 輸出層
+        return self.output_dense(x)
 
     def train_step(self, data):
         x, y = data
@@ -672,17 +694,9 @@ def main():
         try:
             for gpu in gpus:
                 tf.config.experimental.set_memory_growth(gpu, True)
-            strategy = tf.distribute.MirroredStrategy()
-            logger.info("使用 GPU 策略")
+            logger.info("已啟用GPU記憶體增長")
         except RuntimeError as e:
             logger.warning(f"GPU設置失敗: {e}")
-            strategy = tf.distribute.get_strategy()
-            logger.info("使用默認策略")
-    else:
-        strategy = tf.distribute.get_strategy()
-        logger.info("使用默認策略")
-    
-    logger.info(f"使用的策略: {strategy}")
     
     try:
         # 加載數據
@@ -695,65 +709,85 @@ def main():
         
         # 構建模型
         logger.info("構建模型...")
-        with strategy.scope():
-            model = WavFeatureCNN(CONFIG)
+        model = WavFeatureCNN(CONFIG)
             
-            # 編譯模型
-            logger.info("編譯模型...")
-            model.compile(
-                optimizer=tf.keras.optimizers.Adam(
-                    learning_rate=CONFIG['training']['learning_rate'],
-                    clipnorm=1.0
-                ),
-                loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-                metrics=['accuracy']
-            )
+        # 編譯模型
+        logger.info("編譯模型...")
+        model.compile(
+            optimizer=tf.keras.optimizers.Adam(
+                learning_rate=CONFIG['training']['learning_rate'],
+                clipnorm=1.0
+            ),
+            loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+            metrics=['accuracy']
+        )
         
         # 訓練模型
         logger.info("開始訓練...")
         X_train, y_train, _ = train_data
         X_val, y_val, _ = val_data
         
+        # 減少批次大小
+        batch_size = 4  # 從8減少到4
+        
+        # 創建數據集並啟用預取
+        train_dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train))
+        train_dataset = train_dataset.shuffle(1000)
+        train_dataset = train_dataset.batch(batch_size)
+        train_dataset = train_dataset.prefetch(tf.data.AUTOTUNE)
+        
+        val_dataset = tf.data.Dataset.from_tensor_slices((X_val, y_val))
+        val_dataset = val_dataset.batch(batch_size)
+        val_dataset = val_dataset.prefetch(tf.data.AUTOTUNE)
+        
+        # 設置回調，減少TensorBoard的記錄頻率
+        callbacks = [
+            tf.keras.callbacks.ModelCheckpoint(
+                filepath=os.path.join(CONFIG['paths']['model_dir'], 'best_model.keras'),
+                save_best_only=True,
+                monitor='val_loss',
+                mode='min',
+                verbose=1
+            ),
+            tf.keras.callbacks.EarlyStopping(
+                monitor='val_loss',
+                patience=CONFIG['training']['patience'],
+                restore_best_weights=True,
+                verbose=1
+            ),
+            tf.keras.callbacks.ReduceLROnPlateau(
+                monitor='val_loss',
+                factor=0.5,
+                patience=5,
+                min_lr=CONFIG['training']['min_lr'],
+                verbose=1
+            ),
+            tf.keras.callbacks.TensorBoard(
+                log_dir=os.path.join(CONFIG['paths']['tensorboard_dir'],
+                                   datetime.now().strftime("%Y%m%d-%H%M%S")),
+                histogram_freq=0,  # 禁用直方圖記錄
+                update_freq='epoch',  # 每個epoch更新一次
+                profile_batch=0  # 禁用分析器
+            )
+        ]
+        
+        # 訓練模型
         history = model.fit(
-            X_train,
-            y_train,
-            batch_size=CONFIG['training']['batch_size'],
+            train_dataset,
             epochs=CONFIG['training']['epochs'],
-            validation_data=(X_val, y_val),
-            callbacks=[
-                tf.keras.callbacks.ModelCheckpoint(
-                    filepath=os.path.join(CONFIG['paths']['model_dir'], 'best_model.keras'),
-                    save_best_only=True,
-                    monitor='val_loss',
-                    mode='min',
-                    verbose=1
-                ),
-                tf.keras.callbacks.EarlyStopping(
-                    monitor='val_loss',
-                    patience=CONFIG['training']['patience'],
-                    restore_best_weights=True,
-                    verbose=1
-                ),
-                tf.keras.callbacks.ReduceLROnPlateau(
-                    monitor='val_loss',
-                    factor=0.5,
-                    patience=5,
-                    min_lr=CONFIG['training']['min_lr'],
-                    verbose=1
-                ),
-                tf.keras.callbacks.TensorBoard(
-                    log_dir=os.path.join(CONFIG['paths']['tensorboard_dir'],
-                                       datetime.now().strftime("%Y%m%d-%H%M%S")),
-                    histogram_freq=1
-                )
-            ],
+            validation_data=val_dataset,
+            callbacks=callbacks,
             verbose=1
         )
         
         # 評估模型
         logger.info("\n=== 測試集評估 ===")
         X_test, y_test, _ = test_data
-        evaluate_model(model, X_test, y_test, logger, CONFIG)
+        test_dataset = tf.data.Dataset.from_tensor_slices((X_test, y_test))
+        test_dataset = test_dataset.batch(batch_size)
+        test_dataset = test_dataset.prefetch(tf.data.AUTOTUNE)
+        
+        evaluate_model(model, test_dataset, y_test, logger, CONFIG)
         
     except Exception as e:
         logger.error(f"訓練過程中出錯: {str(e)}")

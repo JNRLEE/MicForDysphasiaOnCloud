@@ -14,17 +14,20 @@ class WavFeatureCNN(tf.keras.Model):
             # 輸入層
             tf.keras.layers.Input(shape=(512, 2000)),
             
-            # 展平層
-            tf.keras.layers.Reshape((512 * 2000,)),
+            # 先進行降維以減少參數量
+            tf.keras.layers.AveragePooling1D(pool_size=4),
             
-            # 第一個全連接層
-            tf.keras.layers.Dense(512),
+            # 展平層
+            tf.keras.layers.Flatten(),
+            
+            # 第一個全連接層 (減少神經元數量)
+            tf.keras.layers.Dense(256),
             tf.keras.layers.BatchNormalization(),
             tf.keras.layers.Activation('relu'),
             tf.keras.layers.Dropout(0.3),
             
             # 第二個全連接層
-            tf.keras.layers.Dense(128),
+            tf.keras.layers.Dense(64),
             tf.keras.layers.BatchNormalization(),
             tf.keras.layers.Activation('relu'),
             tf.keras.layers.Dropout(0.3),
