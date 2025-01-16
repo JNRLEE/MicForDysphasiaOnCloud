@@ -27,14 +27,23 @@ audio:
 
 # 模型結構配置
 model:
-  input_dim: 1024000  # 512 * 2000 = 1,024,000
-  fc_layers: [512, 256, 128]  # 三層全連接層的神經元數量
+  conv_layers:
+    - filters: 32
+      kernel_size: 5
+      pool_size: 4
+    - filters: 64
+      kernel_size: 5
+      pool_size: 4
+    - filters: 128
+      kernel_size: 5
+      pool_size: 4
+  dense_layers: [256, 128]
   dropout_rate: 0.5
   use_batch_norm: true
 
 # 訓練配置
 training:
-  batch_size: 128  # 增加批次大小以充分利用TPU
+  batch_size: 32  # 減小批次大小以避免內存問題
   epochs: 30
   learning_rate: 0.001
   early_stopping_patience: 10
