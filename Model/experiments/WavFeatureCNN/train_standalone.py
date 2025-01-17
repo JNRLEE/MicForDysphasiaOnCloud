@@ -1,9 +1,11 @@
 """
 此代碼整合了WavFeatureCNN模型的所有組件，
 包括配置、模型定義和訓練流程。
+python Model/experiments/WavFeatureCNN/train_standalone.py
+tensorboard --logdir=logs/ --port=6006
 """
 
-import os
+import ostensorboard --logdir=logs/ --port=6006
 import sys
 import json
 import numpy as np
