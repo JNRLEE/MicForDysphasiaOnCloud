@@ -1,5 +1,5 @@
 """
-此代碼整合了WavFeatureCNN模型的所有組件，
+此代碼整合了WavFeatureCNN模型的所有組件，目前使用的是FC layer
 包括配置、模型定義和訓練流程。
 python Model/experiments/WavFeatureCNN/train_standalone.py
 tensorboard --logdir=runs
@@ -187,112 +187,46 @@ class TransposeLayer(tf.keras.layers.Layer):
         return tf.transpose(inputs, [0, 2, 1])
 
 class WavFeatureCNN(tf.keras.Model):
-    """使用卷積層和池化層的音頻特徵分類模型"""
-    
+    """
+    簡化版的全連接層分類模型，使用較小的網絡容量和穩定的訓練策略
+    """
     def __init__(self, config=None):
-        """初始化模型"""
-        super(WavFeatureCNN, self).__init__()
-        
-        # 轉置層
+        """
+        初始化模型，設置所有層
+        """
+        super().__init__()
         self.transpose = TransposeLayer()
+        self.flatten = tf.keras.layers.Flatten()
         
-        # 第一個卷積層組
-        self.conv1 = tf.keras.layers.Conv1D(32, 3, padding='same')
-        self.bn1 = tf.keras.layers.BatchNormalization()
-        self.act1 = tf.keras.layers.ReLU()
-        self.pool1 = tf.keras.layers.MaxPooling1D(2)
-        
-        # 第二個卷積層組
-        self.conv2 = tf.keras.layers.Conv1D(64, 3, padding='same')
-        self.bn2 = tf.keras.layers.BatchNormalization()
-        self.act2 = tf.keras.layers.ReLU()
-        self.pool2 = tf.keras.layers.MaxPooling1D(2)
-        
-        # 第三個卷積層組
-        self.conv3 = tf.keras.layers.Conv1D(128, 3, padding='same')
-        self.bn3 = tf.keras.layers.BatchNormalization()
-        self.act3 = tf.keras.layers.ReLU()
-        
-        # 全局池化層
-        self.global_pool = tf.keras.layers.GlobalAveragePooling1D()
-        
-        # Dropout
-        self.dropout = tf.keras.layers.Dropout(0.3)
+        # 第一個全連接層組
+        self.dense1 = tf.keras.layers.Dense(64, name='dense1')
+        self.bn1 = tf.keras.layers.BatchNormalization(name='bn1')
+        self.act1 = tf.keras.layers.ReLU(name='act1')
+        self.drop1 = tf.keras.layers.Dropout(0.3, name='drop1')
         
         # 輸出層
-        self.output_dense = tf.keras.layers.Dense(4, activation='softmax')
-        
+        num_classes = get_num_classes()  # 從配置中獲取類別數
+        self.output_dense = tf.keras.layers.Dense(num_classes, activation='softmax', name='output')
+
     def call(self, inputs, training=False):
-        """前向傳播"""
-        # 確保輸入是float32類型
+        """
+        前向傳播
+        """
         x = tf.cast(inputs, tf.float32)
-        
-        # 轉置處理
         x = self.transpose(x)
+        x = self.flatten(x)
         
-        # 第一個卷積層組
-        x = self.conv1(x)
+        # 第一個全連接層組
+        x = self.dense1(x)
         x = self.bn1(x, training=training)
         x = self.act1(x)
-        x = self.pool1(x)
-        
-        # 第二個卷積層組
-        x = self.conv2(x)
-        x = self.bn2(x, training=training)
-        x = self.act2(x)
-        x = self.pool2(x)
-        
-        # 第三個卷積層組
-        x = self.conv3(x)
-        x = self.bn3(x, training=training)
-        x = self.act3(x)
-        
-        # 全局池化
-        x = self.global_pool(x)
-        
-        # Dropout
-        x = self.dropout(x, training=training)
+        x = self.drop1(x, training=training)
         
         # 輸出層
         return self.output_dense(x)
 
-    def train_step(self, data):
-        x, y = data
-        
-        with tf.GradientTape() as tape:
-            y_pred = self(x, training=True)
-            loss = self.compiled_loss(y, y_pred, regularization_losses=self.losses)
-            
-        gradients = tape.gradient(loss, self.trainable_variables)
-        self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
-        self.compiled_metrics.update_state(y, y_pred)
-        
-        return {m.name: m.result() for m in self.metrics}
-
-    def test_step(self, data):
-        x, y = data
-        y_pred = self(x, training=False)
-        self.compiled_loss(y, y_pred, regularization_losses=self.losses)
-        self.compiled_metrics.update_state(y, y_pred)
-        return {m.name: m.result() for m in self.metrics}
-
-    def build_model(self, input_shape):
-        """構建模型"""
-        self.build(input_shape)
-        
-        # 編譯模型
-        self.compile(
-            optimizer=tf.keras.optimizers.Adam(
-                learning_rate=CONFIG['training']['learning_rate'],
-                clipnorm=1.0  # 添加梯度裁剪
-            ),
-            loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-            metrics=['accuracy']
-        )
-        
-        # 打印模型摘要
-        self.summary()
-        return self
+    def get_config(self):
+        return super().get_config()
 
 def setup_logger() -> logging.Logger:
     """設置日誌記錄器"""
@@ -716,9 +650,7 @@ class BatchLossCallback(tf.keras.callbacks.Callback):
             self.writer.close()
 
 def train_model(model, train_data, val_data, config):
-    """
-    訓練模型的主要函數
-    """
+    """訓練模型"""
     # 啟用記憶體優化
     tf.config.experimental.enable_tensor_float_32_execution(True)
     
@@ -749,30 +681,21 @@ def train_model(model, train_data, val_data, config):
     
     # 設置回調函數
     callbacks = [
-        tf.keras.callbacks.ModelCheckpoint(
-            filepath=os.path.join(config['checkpoint_dir'], "best_model.keras"),
-            save_best_only=True,
-            monitor='val_loss',
-            mode='min'
-        ),
         tf.keras.callbacks.EarlyStopping(
             monitor='val_loss',
-            patience=config['early_stopping_patience'],
+            patience=config['training']['patience'],
             restore_best_weights=True
         ),
         tf.keras.callbacks.ReduceLROnPlateau(
             monitor='val_loss',
-            factor=0.5,
-            patience=3,
-            min_lr=1e-6
+            factor=config['training']['factor'],
+            patience=5,
+            min_lr=config['training']['min_lr']
         ),
-        BatchLossCallback(log_dir=log_dir),
         tf.keras.callbacks.TensorBoard(
-            log_dir=log_dir,
-            update_freq='batch',
-            histogram_freq=1,
-            write_images=True,
-            profile_batch=0  # 禁用性能分析以減少記憶體使用
+            log_dir=config['paths']['tensorboard_dir'],
+            histogram_freq=0,  # 禁用直方圖
+            write_images=False  # 禁用圖像保存
         )
     ]
     
@@ -815,7 +738,7 @@ def main():
         logger.info("編譯模型...")
         model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-            loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+            loss=tf.keras.losses.SparseCategoricalCrossentropy(),
             metrics=['accuracy']
         )
         

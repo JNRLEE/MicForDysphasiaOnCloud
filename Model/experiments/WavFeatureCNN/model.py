@@ -5,9 +5,14 @@
 import tensorflow as tf
 from Model.base.class_config import get_num_classes
 
+class TransposeLayer(tf.keras.layers.Layer):
+    """轉置層，用於調整輸入特徵的維度順序"""
+    def call(self, inputs):
+        return tf.transpose(inputs, [0, 2, 1])
+
 class WavFeatureCNN(tf.keras.Model):
     """
-    簡化版的全連接層分類模型,使用較大的網絡容量和穩定的訓練策略
+    簡化版的全連接層分類模型,使用較小的網絡容量和穩定的訓練策略
     """
     def __init__(self, config=None):
         """
@@ -15,28 +20,25 @@ class WavFeatureCNN(tf.keras.Model):
         """
         super().__init__()
         self.transpose = TransposeLayer()
+        self.flatten = tf.keras.layers.Flatten()
         
         # 第一個全連接層組
-        self.dense1 = tf.keras.layers.Dense(512, name='dense1')
+        self.dense1 = tf.keras.layers.Dense(64, name='dense1')
         self.bn1 = tf.keras.layers.BatchNormalization(name='bn1')
         self.act1 = tf.keras.layers.ReLU(name='act1')
         self.drop1 = tf.keras.layers.Dropout(0.3, name='drop1')
         
-        # 第二個全連接層組
-        self.dense2 = tf.keras.layers.Dense(128, name='dense2')
-        self.bn2 = tf.keras.layers.BatchNormalization(name='bn2')
-        self.act2 = tf.keras.layers.ReLU(name='act2')
-        self.drop2 = tf.keras.layers.Dropout(0.3, name='drop2')
-        
         # 輸出層
-        self.output_dense = tf.keras.layers.Dense(4, name='output')
+        num_classes = get_num_classes()  # 從配置中獲取類別數
+        self.output_dense = tf.keras.layers.Dense(num_classes, activation='softmax', name='output')
 
     def call(self, inputs, training=False):
         """
         前向傳播
         """
-        x = self.transpose(inputs)
-        x = tf.cast(x, tf.float32)
+        x = tf.cast(inputs, tf.float32)
+        x = self.transpose(x)
+        x = self.flatten(x)
         
         # 第一個全連接層組
         x = self.dense1(x)
@@ -44,18 +46,8 @@ class WavFeatureCNN(tf.keras.Model):
         x = self.act1(x)
         x = self.drop1(x, training=training)
         
-        # 第二個全連接層組
-        x = self.dense2(x)
-        x = self.bn2(x, training=training)
-        x = self.act2(x)
-        x = self.drop2(x, training=training)
-        
         # 輸出層
         return self.output_dense(x)
 
     def get_config(self):
         return super().get_config()
-
-    def build(self, input_shape):
-        self.model.build(input_shape)
-        self.built = True

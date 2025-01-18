@@ -34,21 +34,21 @@ SELECTION_TYPES = {
 CLASS_CONFIG = {
     'Normal-NoMovement': 1,
     'Normal-DrySwallow': 1,
-    'Normal-Cracker': 0,
-    'Normal-Jelly': 0,
-    'Normal-WaterDrinking': 0,
+    'Normal-Cracker': 1,
+    'Normal-Jelly': 1,
+    'Normal-WaterDrinking': 1,
     'Patient-NoMovement': 0,
     'Patient-DrySwallow': 0,
     'Patient-Cracker': 0,
     'Patient-Jelly': 0,
-    'Patient-WaterDrinking': 0
+    'Patient-WaterDrinking': 1
 }
 
 def get_active_classes() -> List[str]:
-    """獲取活動類別列表（為了向後兼容）
+    """獲取活動類別列表
     
     Returns:
-        List[str]: 活動類別列表
+        List[str]: 活動類別列表（CLASS_CONFIG 中值為 1 的類別）
     """
     return [cls for cls, active in CLASS_CONFIG.items() if active == 1]
 
@@ -132,11 +132,16 @@ def update_labels(labels: np.ndarray, label_names: List[str]) -> Tuple[np.ndarra
     Returns:
         Tuple[np.ndarray, List[str]]: 更新後的標籤和活動類別列表
     """
-    active_classes = get_active_classes()
-    class_mapping = get_class_mapping()
+    # 獲取激活的類別（CLASS_CONFIG 中值為 1 的類別）
+    active_classes = [cls for cls, active in CLASS_CONFIG.items() if active == 1]
     
-    # 創建新標籤
-    new_labels = np.array([class_mapping[label_names[i]] for i in labels])
+    # 創建類別到索引的映射
+    class_mapping = {cls: idx for idx, cls in enumerate(active_classes)}
+    
+    # 過濾並更新標籤
+    mask = np.array([CLASS_CONFIG.get(label_names[i], 0) == 1 for i in labels])
+    filtered_labels = labels[mask]
+    new_labels = np.array([class_mapping[label_names[i]] for i in filtered_labels])
     
     return new_labels, active_classes
 
@@ -151,10 +156,8 @@ def filter_data(data: np.ndarray, labels: np.ndarray, label_names: List[str]) ->
     Returns:
         Tuple[np.ndarray, np.ndarray]: 過濾後的數據和標籤
     """
-    active_classes = get_active_classes()
-    
-    # 創建掩碼
-    mask = np.array([label_names[i] in active_classes for i in labels])
+    # 只保留在 CLASS_CONFIG 中設置為 1 的類別
+    mask = np.array([CLASS_CONFIG.get(label_names[i], 0) == 1 for i in labels])
     
     # 過濾數據
     filtered_data = data[mask]
