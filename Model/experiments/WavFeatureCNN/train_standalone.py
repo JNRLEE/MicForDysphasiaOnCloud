@@ -649,6 +649,49 @@ class BatchLossCallback(tf.keras.callbacks.Callback):
         if self.writer is not None:
             self.writer.close()
 
+class BatchLogger(tf.keras.callbacks.Callback):
+    """記錄每個batch的詳細資訊的回調函數"""
+    def __init__(self, log_dir, file_paths):
+        super().__init__()
+        self.log_dir = log_dir
+        self.file_paths = file_paths
+        self.batch_logs = []
+        self.writer = tf.summary.create_file_writer(os.path.join(log_dir, 'batch_metrics'))
+        
+    def on_epoch_begin(self, epoch, logs=None):
+        self.batch_logs = []  # 清除上一個 epoch 的日誌
+        
+    def on_train_batch_end(self, batch, logs=None):
+        logs = logs or {}
+        batch_size = logs.get('size', 0)  # 從 logs 中獲取批次大小
+        
+        # 計算當前批次的樣本索引
+        start_idx = batch * batch_size
+        end_idx = start_idx + batch_size
+        
+        # 獲取當前批次的文件路徑
+        batch_files = self.file_paths[start_idx:end_idx]
+        
+        # 記錄批次信息
+        batch_info = {
+            'batch': batch,
+            'loss': logs.get('loss', None),
+            'accuracy': logs.get('accuracy', None),
+            'files': batch_files
+        }
+        self.batch_logs.append(batch_info)
+        
+        # 將指標寫入 TensorBoard
+        with self.writer.as_default():
+            tf.summary.scalar('batch_loss', logs.get('loss', 0), step=batch)
+            tf.summary.scalar('batch_accuracy', logs.get('accuracy', 0), step=batch)
+            
+    def on_epoch_end(self, epoch, logs=None):
+        # 將批次日誌保存到文件
+        log_file = os.path.join(self.log_dir, f'batch_logs_epoch_{epoch}.json')
+        with open(log_file, 'w') as f:
+            json.dump(self.batch_logs, f, indent=2)
+
 def train_model(model, train_data, val_data, config):
     """訓練模型"""
     # 啟用記憶體優化
@@ -662,6 +705,10 @@ def train_model(model, train_data, val_data, config):
     log_dir = os.path.join("runs", "WavFeatureCNN_" + timestamp)
     os.makedirs(log_dir, exist_ok=True)
     
+    # 創建batch日誌目錄
+    batch_log_dir = os.path.join(log_dir, "batch_logs")
+    os.makedirs(batch_log_dir, exist_ok=True)
+    
     # 保存訓練配置
     config_path = os.path.join(log_dir, "train", "training_config.json")
     os.makedirs(os.path.dirname(config_path), exist_ok=True)
@@ -672,6 +719,10 @@ def train_model(model, train_data, val_data, config):
     train_features, train_labels = train_data
     val_features, val_labels = val_data
     
+    # 獲取訓練數據的文件路徑
+    train_file_paths = [f for f in glob.glob(os.path.join(CONFIG['dataset']['data_dir'], '**/*.wav'), recursive=True)
+                       if is_class_active(get_action_type(os.path.basename(os.path.dirname(f))))]
+    
     train_dataset = tf.data.Dataset.from_tensor_slices((train_features, train_labels))
     val_dataset = tf.data.Dataset.from_tensor_slices((val_features, val_labels))
     
@@ -681,6 +732,7 @@ def train_model(model, train_data, val_data, config):
     
     # 設置回調函數
     callbacks = [
+        BatchLogger(batch_log_dir, train_file_paths),
         tf.keras.callbacks.EarlyStopping(
             monitor='val_loss',
             patience=config['training']['patience'],
@@ -693,9 +745,10 @@ def train_model(model, train_data, val_data, config):
             min_lr=config['training']['min_lr']
         ),
         tf.keras.callbacks.TensorBoard(
-            log_dir=config['paths']['tensorboard_dir'],
-            histogram_freq=0,  # 禁用直方圖
-            write_images=False  # 禁用圖像保存
+            log_dir=log_dir,
+            histogram_freq=0,
+            write_images=False,
+            update_freq='batch'
         )
     ]
     

@@ -33,9 +33,9 @@ SELECTION_TYPES = {
 # 類別配置字典（通過設置1/0來控制分類）
 CLASS_CONFIG = {
     'Normal-NoMovement': 1,
-    'Normal-DrySwallow': 1,
-    'Normal-Cracker': 1,
-    'Normal-Jelly': 1,
+    'Normal-DrySwallow': 0,
+    'Normal-Cracker': 0,
+    'Normal-Jelly': 0,
     'Normal-WaterDrinking': 1,
     'Patient-NoMovement': 0,
     'Patient-DrySwallow': 0,
