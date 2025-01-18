@@ -55,6 +55,7 @@ from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, TensorBoa
 from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
 import seaborn as sns
+import pandas as pd
 
 # 配置參數
 CONFIG = {
@@ -261,7 +262,7 @@ def save_history(history, save_dir: str):
     with open(history_file, 'w') as f:
         json.dump(history_dict, f, indent=2)
 
-def prepare_data(features, labels, patient_ids, test_size=0.2, val_size=0.2, logger=None):
+def prepare_data(features, labels, patient_ids, file_paths, test_size=0.2, val_size=0.2, logger=None):
     """
     準備訓練、驗證和測試數據集，確保同一個病人的資料只會出現在一個數據集中
     
@@ -269,6 +270,7 @@ def prepare_data(features, labels, patient_ids, test_size=0.2, val_size=0.2, log
         features: 特徵數據
         labels: 標籤數據  
         patient_ids: 病人ID列表
+        file_paths: 文件路徑列表
         test_size: 測試集比例
         val_size: 驗證集比例
         logger: 日誌記錄器
@@ -318,10 +320,15 @@ def prepare_data(features, labels, patient_ids, test_size=0.2, val_size=0.2, log
     # 分割數據
     train_features = features[train_indices]
     train_labels = labels[train_indices]
+    train_paths = [file_paths[i] for i in train_indices]
+    
     val_features = features[val_indices]
     val_labels = labels[val_indices]
+    val_paths = [file_paths[i] for i in val_indices]
+    
     test_features = features[test_indices]
     test_labels = labels[test_indices]
+    test_paths = [file_paths[i] for i in test_indices]
     
     if logger:
         logger.info("\n=== 數據分割詳細信息 ===")
@@ -360,7 +367,7 @@ def prepare_data(features, labels, patient_ids, test_size=0.2, val_size=0.2, log
             for label, count in zip(unique, counts):
                 logger.info(f"類別 {label}: {count} 個樣本")
     
-    return (train_features, train_labels), (val_features, val_labels), (test_features, test_labels)
+    return (train_features, train_labels, train_paths), (val_features, val_labels, val_paths), (test_features, test_labels, test_paths)
 
 def load_data(config, logger):
     """
@@ -375,6 +382,7 @@ def load_data(config, logger):
     labels_list = []
     filenames_list = []
     patient_ids_list = []
+    file_paths_list = []  # 新增：用於追踪文件路徑
     
     # 獲取活躍類別的映射
     active_classes = {k: v for k, v in CLASS_CONFIG.items() if v == 1}
@@ -477,6 +485,16 @@ def load_data(config, logger):
             filenames_list.extend([os.path.basename(dir_path)] * len(features))
             patient_ids_list.extend([patient_id] * len(features))
             
+            # 新增：保存對應的音頻文件路徑
+            wav_file = os.path.join(dir_path, "Probe0_RX_IN_TDM4CH0.wav")
+            if os.path.exists(wav_file):
+                # 使用相對路徑，從CombinedData開始
+                rel_path = os.path.relpath(wav_file, config['dataset']['data_dir'])
+                file_paths_list.extend([rel_path] * len(features))
+            else:
+                logger.warning(f"找不到音頻文件: {wav_file}")
+                file_paths_list.extend([os.path.basename(dir_path)] * len(features))
+            
         except Exception as e:
             logger.error(f"處理文件時出錯 {file_path}: {str(e)}")
             continue
@@ -487,6 +505,7 @@ def load_data(config, logger):
     # 合併所有特徵
     features = np.concatenate(features_list, axis=0)
     labels = np.array(labels_list)
+    file_paths = np.array(file_paths_list)  # 新增：轉換為numpy數組
     
     # 特徵標準化
     features_reshaped = features.reshape(-1, features.shape[-1])
@@ -511,6 +530,7 @@ def load_data(config, logger):
         features=features,
         labels=labels,
         patient_ids=patient_ids_list,
+        file_paths=file_paths_list,
         test_size=config['dataset']['test_ratio'],
         val_size=config['dataset']['val_ratio'],
         logger=logger
@@ -530,50 +550,50 @@ def load_data(config, logger):
             class_name = list(class_mapping.keys())[label]
             logger.info(f"  - {class_name}: {count}")
     
-    return train_data, val_data, test_data, class_mapping
+    return train_data, val_data, test_data, class_mapping, file_paths_list  # 新增：返回文件路徑列表
 
 def evaluate_model(model, test_data, class_mapping, logger):
-    """評估模型並生成混淆矩陣"""
-    test_features, test_labels = test_data
-    
-    # 獲取預測結果
+    """
+    評估模型在測試集上的表現
+    """
+    test_features, test_labels, test_paths = test_data
     predictions = model.predict(test_features)
     predicted_labels = np.argmax(predictions, axis=1)
-    
+    # 如果 test_labels 已經是整數標籤，直接使用
+    true_labels = test_labels if len(test_labels.shape) == 1 else np.argmax(test_labels, axis=1)
+
     # 計算準確率
-    accuracy = accuracy_score(test_labels, predicted_labels)
+    accuracy = accuracy_score(true_labels, predicted_labels)
     logger.info(f"\n測試集準確率: {accuracy:.4f}")
-    
+
     # 計算混淆矩陣
-    cm = confusion_matrix(test_labels, predicted_labels)
+    cm = confusion_matrix(true_labels, predicted_labels)
     
-    # 計算其他指標
-    results = {
-        'accuracy': float(accuracy),
-        'precision': float(precision_score(test_labels, predicted_labels, average='macro')),
-        'recall': float(recall_score(test_labels, predicted_labels, average='macro')),
-        'f1': float(f1_score(test_labels, predicted_labels, average='macro')),
-        'confusion_matrix': cm.tolist()
-    }
-    
-    # 保存評估結果
-    os.makedirs('logs', exist_ok=True)
-    with open('logs/evaluation_results.json', 'w') as f:
-        json.dump(results, f, indent=4)
-    
-    # 繪製並保存混淆矩陣
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
-    plt.title('Confusion Matrix')
-    plt.ylabel('True Label')
-    plt.xlabel('Predicted Label')
-    plt.savefig('logs/confusion_matrix.png')
-    plt.close()
-    
-    logger.info("\n評估結果已保存至: logs/evaluation_results.json")
-    logger.info("混淆矩陣已保存至: logs/confusion_matrix.png")
-    
-    return results
+    # 計算每個類別的精確度、召回率和F1分數
+    precision = precision_score(true_labels, predicted_labels, average=None)
+    recall = recall_score(true_labels, predicted_labels, average=None)
+    f1 = f1_score(true_labels, predicted_labels, average=None)
+
+    # 創建預測結果列表
+    prediction_results = []
+    for i in range(len(test_paths)):
+        result = {
+            "file_path": test_paths[i],
+            "true_label": int(true_labels[i]),  # 轉換為 Python int
+            "predicted_label": int(predicted_labels[i]),  # 轉換為 Python int
+            "correct": bool(true_labels[i] == predicted_labels[i])  # 轉換為 Python bool
+        }
+        prediction_results.append(result)
+
+    # 保存預測結果到 JSON 文件
+    os.makedirs("logs", exist_ok=True)
+    with open("logs/prediction_results.json", "w", encoding="utf-8") as f:
+        json.dump(prediction_results, f, indent=4, ensure_ascii=False)
+
+    # 保存混淆矩陣到 CSV 文件
+    cm_df = pd.DataFrame(cm)
+    cm_df.to_csv("logs/confusion_matrix.csv")
+    logger.info("評估結果已保存到 logs 目錄")
 
 def compute_class_weights(labels):
     """計算類別權重"""
@@ -688,30 +708,46 @@ class BatchLogger(tf.keras.callbacks.Callback):
         self.current_epoch = 0
         self.current_batch = 0
         self.total_batches = 0
+        self.batch_size = 4  # 設置默認的batch_size
         
     def on_epoch_begin(self, epoch, logs=None):
         self.batch_logs = []
         self.current_epoch = epoch
         self.current_batch = 0
+        print(f"\n=== 開始第 {epoch + 1} 個訓練週期 ===")
+        
+    def on_train_batch_begin(self, batch, logs=None):
+        """在每個batch開始前打印文件信息"""
+        start_idx = batch * self.batch_size
+        end_idx = min(start_idx + self.batch_size, len(self.file_paths))
+        
+        print(f"\n=== Batch {self.current_batch + 1} 訓練文件 ===")
+        print(f"Epoch {self.current_epoch + 1}, Batch {self.current_batch + 1}")
+        print(f"樣本範圍: {start_idx} - {end_idx}")
+        for idx in range(start_idx, end_idx):
+            if idx < len(self.file_paths):
+                file_path = self.file_paths[idx]
+                print(f"- {file_path}")
+        print("========================\n")
         
     def on_train_batch_end(self, batch, logs=None):
         logs = logs or {}
-        batch_size = logs.get('size', 0)
+        batch_size = logs.get('size', self.batch_size)
         
         # 計算當前批次的樣本索引
         start_idx = batch * batch_size
-        end_idx = start_idx + batch_size
+        end_idx = min(start_idx + batch_size, len(self.file_paths))
         
         # 獲取當前批次的文件路徑
-        batch_files = self.file_paths[start_idx:end_idx]
+        batch_files = self.file_paths[start_idx:end_idx] if start_idx < len(self.file_paths) else []
         
         # 記錄批次信息
         batch_info = {
-            'epoch': self.current_epoch,
-            'batch': self.current_batch,
+            'epoch': self.current_epoch + 1,
+            'batch': self.current_batch + 1,
             'loss': float(logs.get('loss', 0)),
             'accuracy': float(logs.get('accuracy', 0)),
-            'files': batch_files
+            'files': batch_files.tolist() if isinstance(batch_files, np.ndarray) else batch_files
         }
         self.batch_logs.append(batch_info)
         
@@ -726,13 +762,21 @@ class BatchLogger(tf.keras.callbacks.Callback):
                         step=self.total_batches
                     )
         
+        # 打印訓練指標
+        print(f"Batch {self.current_batch + 1} 訓練結果:")
+        print(f"- Loss: {batch_info['loss']:.4f}")
+        print(f"- Accuracy: {batch_info['accuracy']:.4f}")
+        print("------------------------\n")
+        
         self.current_batch += 1
             
     def on_epoch_end(self, epoch, logs=None):
         # 將批次日誌保存到文件
-        log_file = os.path.join(self.log_dir, f'batch_logs_epoch_{epoch}.json')
+        log_file = os.path.join(self.log_dir, f'batch_logs_epoch_{epoch+1}.json')
         with open(log_file, 'w') as f:
             json.dump(self.batch_logs, f, indent=2)
+        print(f"\n=== 第 {epoch + 1} 個訓練週期結束 ===")
+        print(f"批次日誌已保存至: {log_file}\n")
 
 def train_model(model, train_data, val_data, config):
     """訓練模型"""
@@ -758,12 +802,8 @@ def train_model(model, train_data, val_data, config):
         json.dump(config, f, indent=2)
     
     # 將元組數據轉換為tf.data.Dataset
-    train_features, train_labels = train_data
-    val_features, val_labels = val_data
-    
-    # 獲取訓練數據的文件路徑
-    train_file_paths = [f for f in glob.glob(os.path.join(CONFIG['dataset']['data_dir'], '**/*.wav'), recursive=True)
-                       if is_class_active(get_action_type(os.path.basename(os.path.dirname(f))))]
+    train_features, train_labels, train_paths = train_data
+    val_features, val_labels, val_paths = val_data
     
     train_dataset = tf.data.Dataset.from_tensor_slices((train_features, train_labels))
     val_dataset = tf.data.Dataset.from_tensor_slices((val_features, val_labels))
@@ -775,7 +815,7 @@ def train_model(model, train_data, val_data, config):
     # 設置回調函數
     callbacks = [
         BatchLossCallback(log_dir),
-        BatchLogger(batch_log_dir, train_file_paths),
+        BatchLogger(batch_log_dir, train_paths),  # 使用訓練數據的文件路徑
         AutoMonitor(patience=5, min_delta=0.001, check_interval=100),
         tf.keras.callbacks.EarlyStopping(
             monitor='val_loss',
@@ -825,7 +865,7 @@ def main():
             logger.info("已啟用GPU記憶體增長")
         
         # 加載數據
-        train_data, val_data, test_data, class_mapping = load_data(CONFIG, logger)
+        train_data, val_data, test_data, class_mapping, file_paths_list = load_data(CONFIG, logger)
         
         # 構建模型
         logger.info("構建模型...")
