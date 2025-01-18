@@ -3,6 +3,7 @@
 包括配置、模型定義和訓練流程。
 python Model/experiments/WavFeatureCNN/train_standalone.py
 tensorboard --logdir=runs
+rm -rf runs/*
 """
 
 import os
@@ -589,7 +590,9 @@ class BatchLossCallback(tf.keras.callbacks.Callback):
         self.log_dir = log_dir
         self.writer = None
         self.current_epoch = 0
+        self.current_batch = 0
         self.batch_metrics = {}
+        self.total_batches = 0
         
     def on_train_begin(self, logs=None):
         """訓練開始時初始化TensorBoard writer"""
@@ -600,54 +603,79 @@ class BatchLossCallback(tf.keras.callbacks.Callback):
     def on_epoch_begin(self, epoch, logs=None):
         """每個epoch開始時更新當前epoch計數"""
         self.current_epoch = epoch
+        self.current_batch = 0
         self.batch_metrics = {}
         
     def on_train_batch_end(self, batch, logs=None):
         """每個batch結束時記錄指標"""
         if logs is not None and self.writer is not None:
-            batch_id = f"batch_{batch}"
-            
             with self.writer.as_default():
-                # 記錄當前batch的指標
+                # 為每個batch創建獨立的指標
                 for metric_name, metric_value in logs.items():
                     if isinstance(metric_value, (int, float)):
-                        # 使用epoch作為x軸，metric_value作為y軸
+                        # 使用total_batches作為x軸
+                        self.total_batches += 1
+                        
+                        # 記錄每個batch的原始值
                         tf.summary.scalar(
-                            f'{metric_name}/{batch_id}',
+                            f'batch_{metric_name}/batch_{self.current_batch}',
                             metric_value,
-                            step=self.current_epoch
+                            step=self.total_batches
                         )
                         
-                        # 同時記錄移動平均
+                        # 記錄移動平均
                         if metric_name not in self.batch_metrics:
                             self.batch_metrics[metric_name] = []
                         self.batch_metrics[metric_name].append(metric_value)
-                        avg_value = np.mean(self.batch_metrics[metric_name])
+                        window_size = min(50, len(self.batch_metrics[metric_name]))
+                        moving_avg = np.mean(self.batch_metrics[metric_name][-window_size:])
                         tf.summary.scalar(
-                            f'average_{metric_name}',
-                            avg_value,
-                            step=self.current_epoch
+                            f'batch_{metric_name}/moving_average',
+                            moving_avg,
+                            step=self.total_batches
                         )
                 
                 self.writer.flush()
+            self.current_batch += 1
+
+class AutoMonitor(tf.keras.callbacks.Callback):
+    """自動監控訓練狀況的回調函數"""
+    
+    def __init__(self, patience=5, min_delta=0.001, check_interval=100):
+        super().__init__()
+        self.patience = patience
+        self.min_delta = min_delta
+        self.check_interval = check_interval
+        self.best_loss = float('inf')
+        self.wait = 0
+        self.stopped_epoch = 0
+        self.losses = []
+        self.batch_count = 0
+        
+    def on_train_batch_end(self, batch, logs=None):
+        """每個batch結束時檢查訓練狀況"""
+        current_loss = logs.get('loss')
+        if current_loss is not None:
+            self.losses.append(current_loss)
+            self.batch_count += 1
+            
+            if self.batch_count % self.check_interval == 0:
+                # 計算最近check_interval個batch的平均損失
+                recent_avg_loss = np.mean(self.losses[-self.check_interval:])
                 
-    def on_epoch_end(self, epoch, logs=None):
-        """每個epoch結束時記錄整體指標"""
-        if logs is not None and self.writer is not None:
-            with self.writer.as_default():
-                for metric_name, metric_value in logs.items():
-                    if isinstance(metric_value, (int, float)):
-                        tf.summary.scalar(
-                            f'epoch_{metric_name}',
-                            metric_value,
-                            step=epoch
-                        )
-                self.writer.flush()
-                
+                if recent_avg_loss < self.best_loss - self.min_delta:
+                    self.best_loss = recent_avg_loss
+                    self.wait = 0
+                else:
+                    self.wait += 1
+                    
+                if self.wait >= self.patience:
+                    self.model.stop_training = True
+                    print(f'\n自動停止訓練: 最近{self.check_interval}個batch的平均損失沒有顯著改善')
+    
     def on_train_end(self, logs=None):
-        """訓練結束時關閉writer"""
-        if self.writer is not None:
-            self.writer.close()
+        if self.stopped_epoch > 0:
+            print(f'訓練在第 {self.stopped_epoch} 個epoch自動停止')
 
 class BatchLogger(tf.keras.callbacks.Callback):
     """記錄每個batch的詳細資訊的回調函數"""
@@ -657,13 +685,18 @@ class BatchLogger(tf.keras.callbacks.Callback):
         self.file_paths = file_paths
         self.batch_logs = []
         self.writer = tf.summary.create_file_writer(os.path.join(log_dir, 'batch_metrics'))
+        self.current_epoch = 0
+        self.current_batch = 0
+        self.total_batches = 0
         
     def on_epoch_begin(self, epoch, logs=None):
-        self.batch_logs = []  # 清除上一個 epoch 的日誌
+        self.batch_logs = []
+        self.current_epoch = epoch
+        self.current_batch = 0
         
     def on_train_batch_end(self, batch, logs=None):
         logs = logs or {}
-        batch_size = logs.get('size', 0)  # 從 logs 中獲取批次大小
+        batch_size = logs.get('size', 0)
         
         # 計算當前批次的樣本索引
         start_idx = batch * batch_size
@@ -674,17 +707,26 @@ class BatchLogger(tf.keras.callbacks.Callback):
         
         # 記錄批次信息
         batch_info = {
-            'batch': batch,
-            'loss': logs.get('loss', None),
-            'accuracy': logs.get('accuracy', None),
+            'epoch': self.current_epoch,
+            'batch': self.current_batch,
+            'loss': float(logs.get('loss', 0)),
+            'accuracy': float(logs.get('accuracy', 0)),
             'files': batch_files
         }
         self.batch_logs.append(batch_info)
         
-        # 將指標寫入 TensorBoard
+        # 將每個batch的指標寫入TensorBoard
         with self.writer.as_default():
-            tf.summary.scalar('batch_loss', logs.get('loss', 0), step=batch)
-            tf.summary.scalar('batch_accuracy', logs.get('accuracy', 0), step=batch)
+            self.total_batches += 1
+            for metric_name, metric_value in logs.items():
+                if isinstance(metric_value, (int, float)):
+                    tf.summary.scalar(
+                        f'batch_metrics/{metric_name}/batch_{self.current_batch}',
+                        metric_value,
+                        step=self.total_batches
+                    )
+        
+        self.current_batch += 1
             
     def on_epoch_end(self, epoch, logs=None):
         # 將批次日誌保存到文件
@@ -732,7 +774,9 @@ def train_model(model, train_data, val_data, config):
     
     # 設置回調函數
     callbacks = [
+        BatchLossCallback(log_dir),
         BatchLogger(batch_log_dir, train_file_paths),
+        AutoMonitor(patience=5, min_delta=0.001, check_interval=100),
         tf.keras.callbacks.EarlyStopping(
             monitor='val_loss',
             patience=config['training']['patience'],
