@@ -34,11 +34,11 @@ SELECTION_TYPES = {
 CLASS_CONFIG = {
     'Normal-NoMovement': 1,
     'Normal-DrySwallow': 1,
-    'Normal-Cracker': 1,
+    'Normal-Cracker': 0,
     'Normal-Jelly': 0,
     'Normal-WaterDrinking': 0,
     'Patient-NoMovement': 0,
-    'Patient-DrySwallow': 1,
+    'Patient-DrySwallow': 0,
     'Patient-Cracker': 0,
     'Patient-Jelly': 0,
     'Patient-WaterDrinking': 0

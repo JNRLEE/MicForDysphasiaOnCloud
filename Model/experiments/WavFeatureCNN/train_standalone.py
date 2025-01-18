@@ -2,10 +2,10 @@
 此代碼整合了WavFeatureCNN模型的所有組件，
 包括配置、模型定義和訓練流程。
 python Model/experiments/WavFeatureCNN/train_standalone.py
-tensorboard --logdir=logs/ --port=6006
+tensorboard --logdir=runs
 """
 
-import ostensorboard --logdir=logs/ --port=6006
+import os
 import sys
 import json
 import numpy as np
@@ -110,7 +110,9 @@ CONFIG = {
         'save_dir': 'logs',
         'model_dir': 'logs/models',
         'tensorboard_dir': 'logs/tensorboard'
-    }
+    },
+    'checkpoint_dir': 'checkpoints',  # 添加檢查點目錄
+    'early_stopping_patience': 10,    # 添加早停的耐心值
 }
 
 # 確保日誌目錄存在
@@ -185,57 +187,71 @@ class TransposeLayer(tf.keras.layers.Layer):
         return tf.transpose(inputs, [0, 2, 1])
 
 class WavFeatureCNN(tf.keras.Model):
-    """簡化版的全連接層分類模型"""
+    """使用卷積層和池化層的音頻特徵分類模型"""
     
     def __init__(self, config=None):
-        """初始化模型
-        
-        Args:
-            config: 配置字典，包含模型參數
-        """
+        """初始化模型"""
         super(WavFeatureCNN, self).__init__()
         
         # 轉置層
         self.transpose = TransposeLayer()
         
-        # 展平層
-        self.flatten = tf.keras.layers.Flatten()
+        # 第一個卷積層組
+        self.conv1 = tf.keras.layers.Conv1D(32, 3, padding='same')
+        self.bn1 = tf.keras.layers.BatchNormalization()
+        self.act1 = tf.keras.layers.ReLU()
+        self.pool1 = tf.keras.layers.MaxPooling1D(2)
         
-        # 全連接層
-        self.dense1 = tf.keras.layers.Dense(64, activation='relu', dtype=tf.float32)
-        self.dropout1 = tf.keras.layers.Dropout(0.3, dtype=tf.float32)
+        # 第二個卷積層組
+        self.conv2 = tf.keras.layers.Conv1D(64, 3, padding='same')
+        self.bn2 = tf.keras.layers.BatchNormalization()
+        self.act2 = tf.keras.layers.ReLU()
+        self.pool2 = tf.keras.layers.MaxPooling1D(2)
         
-        self.dense2 = tf.keras.layers.Dense(32, activation='relu', dtype=tf.float32)
-        self.dropout2 = tf.keras.layers.Dropout(0.3, dtype=tf.float32)
+        # 第三個卷積層組
+        self.conv3 = tf.keras.layers.Conv1D(128, 3, padding='same')
+        self.bn3 = tf.keras.layers.BatchNormalization()
+        self.act3 = tf.keras.layers.ReLU()
+        
+        # 全局池化層
+        self.global_pool = tf.keras.layers.GlobalAveragePooling1D()
+        
+        # Dropout
+        self.dropout = tf.keras.layers.Dropout(0.3)
         
         # 輸出層
-        self.output_dense = tf.keras.layers.Dense(4, dtype=tf.float32)  # 4個類別
+        self.output_dense = tf.keras.layers.Dense(4, activation='softmax')
         
     def call(self, inputs, training=False):
-        """前向傳播
-        
-        Args:
-            inputs: 輸入張量
-            training: 是否處於訓練模式
-            
-        Returns:
-            模型輸出
-        """
+        """前向傳播"""
         # 確保輸入是float32類型
         x = tf.cast(inputs, tf.float32)
         
         # 轉置處理
         x = self.transpose(x)
         
-        # 展平
-        x = self.flatten(x)
+        # 第一個卷積層組
+        x = self.conv1(x)
+        x = self.bn1(x, training=training)
+        x = self.act1(x)
+        x = self.pool1(x)
         
-        # 全連接層
-        x = self.dense1(x)
-        x = self.dropout1(x, training=training)
+        # 第二個卷積層組
+        x = self.conv2(x)
+        x = self.bn2(x, training=training)
+        x = self.act2(x)
+        x = self.pool2(x)
         
-        x = self.dense2(x)
-        x = self.dropout2(x, training=training)
+        # 第三個卷積層組
+        x = self.conv3(x)
+        x = self.bn3(x, training=training)
+        x = self.act3(x)
+        
+        # 全局池化
+        x = self.global_pool(x)
+        
+        # Dropout
+        x = self.dropout(x, training=training)
         
         # 輸出層
         return self.output_dense(x)
@@ -631,70 +647,143 @@ def compute_class_weights(labels):
         class_weights[label] = 1 / np.sum(labels == label)
     return class_weights
 
-def train_model(model, train_data, val_data, test_data, config):
-    """訓練模型"""
-    # 解包數據
-    train_features, train_labels = train_data
-    val_features, val_labels = val_data
+class BatchLossCallback(tf.keras.callbacks.Callback):
+    """用於記錄每個批次的訓練指標的回調函數"""
+    
+    def __init__(self, log_dir):
+        super().__init__()
+        self.log_dir = log_dir
+        self.writer = None
+        self.current_epoch = 0
+        self.batch_metrics = {}
+        
+    def on_train_begin(self, logs=None):
+        """訓練開始時初始化TensorBoard writer"""
+        self.writer = tf.summary.create_file_writer(
+            os.path.join(self.log_dir, 'batch_metrics')
+        )
+        
+    def on_epoch_begin(self, epoch, logs=None):
+        """每個epoch開始時更新當前epoch計數"""
+        self.current_epoch = epoch
+        self.batch_metrics = {}
+        
+    def on_train_batch_end(self, batch, logs=None):
+        """每個batch結束時記錄指標"""
+        if logs is not None and self.writer is not None:
+            batch_id = f"batch_{batch}"
+            
+            with self.writer.as_default():
+                # 記錄當前batch的指標
+                for metric_name, metric_value in logs.items():
+                    if isinstance(metric_value, (int, float)):
+                        # 使用epoch作為x軸，metric_value作為y軸
+                        tf.summary.scalar(
+                            f'{metric_name}/{batch_id}',
+                            metric_value,
+                            step=self.current_epoch
+                        )
+                        
+                        # 同時記錄移動平均
+                        if metric_name not in self.batch_metrics:
+                            self.batch_metrics[metric_name] = []
+                        self.batch_metrics[metric_name].append(metric_value)
+                        avg_value = np.mean(self.batch_metrics[metric_name])
+                        tf.summary.scalar(
+                            f'average_{metric_name}',
+                            avg_value,
+                            step=self.current_epoch
+                        )
+                
+                self.writer.flush()
+                
+    def on_epoch_end(self, epoch, logs=None):
+        """每個epoch結束時記錄整體指標"""
+        if logs is not None and self.writer is not None:
+            with self.writer.as_default():
+                for metric_name, metric_value in logs.items():
+                    if isinstance(metric_value, (int, float)):
+                        tf.summary.scalar(
+                            f'epoch_{metric_name}',
+                            metric_value,
+                            step=epoch
+                        )
+                self.writer.flush()
+                
+    def on_train_end(self, logs=None):
+        """訓練結束時關閉writer"""
+        if self.writer is not None:
+            self.writer.close()
+
+def train_model(model, train_data, val_data, config):
+    """
+    訓練模型的主要函數
+    """
+    # 啟用記憶體優化
+    tf.config.experimental.enable_tensor_float_32_execution(True)
+    
+    # 設置較小的批次大小
+    batch_size = 4
     
     # 創建日誌目錄
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    log_dir = os.path.join("logs", timestamp)
+    log_dir = os.path.join("runs", "WavFeatureCNN_" + timestamp)
     os.makedirs(log_dir, exist_ok=True)
+    
+    # 保存訓練配置
+    config_path = os.path.join(log_dir, "train", "training_config.json")
+    os.makedirs(os.path.dirname(config_path), exist_ok=True)
+    with open(config_path, 'w') as f:
+        json.dump(config, f, indent=2)
+    
+    # 將元組數據轉換為tf.data.Dataset
+    train_features, train_labels = train_data
+    val_features, val_labels = val_data
+    
+    train_dataset = tf.data.Dataset.from_tensor_slices((train_features, train_labels))
+    val_dataset = tf.data.Dataset.from_tensor_slices((val_features, val_labels))
+    
+    # 設置數據集批次和預取
+    train_dataset = train_dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+    val_dataset = val_dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
     
     # 設置回調函數
     callbacks = [
-        ModelCheckpoint(
-            os.path.join(log_dir, "best_model.keras"),
-            monitor="val_loss",
+        tf.keras.callbacks.ModelCheckpoint(
+            filepath=os.path.join(config['checkpoint_dir'], "best_model.keras"),
             save_best_only=True,
-            save_weights_only=False,
-            mode="min",
-            verbose=1
+            monitor='val_loss',
+            mode='min'
         ),
-        EarlyStopping(
-            monitor="val_loss",
-            patience=15,
-            restore_best_weights=True,
-            verbose=1
+        tf.keras.callbacks.EarlyStopping(
+            monitor='val_loss',
+            patience=config['early_stopping_patience'],
+            restore_best_weights=True
         ),
-        ReduceLROnPlateau(
-            monitor="val_loss",
+        tf.keras.callbacks.ReduceLROnPlateau(
+            monitor='val_loss',
             factor=0.5,
-            patience=5,
-            min_lr=1e-6,
-            verbose=1
+            patience=3,
+            min_lr=1e-6
         ),
-        TensorBoard(
-            log_dir=os.path.join(log_dir, "tensorboard"),
-            histogram_freq=0,
-            write_graph=True,
-            update_freq="epoch"
+        BatchLossCallback(log_dir=log_dir),
+        tf.keras.callbacks.TensorBoard(
+            log_dir=log_dir,
+            update_freq='batch',
+            histogram_freq=1,
+            write_images=True,
+            profile_batch=0  # 禁用性能分析以減少記憶體使用
         )
     ]
     
-    # 編譯模型
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-        loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-        metrics=["accuracy"]
-    )
-    
     # 訓練模型
     history = model.fit(
-        train_features,
-        train_labels,
-        validation_data=(val_features, val_labels),
+        train_dataset,
+        validation_data=val_dataset,
         epochs=50,
-        batch_size=8,
         callbacks=callbacks,
         verbose=1
     )
-    
-    # 保存訓練歷史
-    history_dict = history.history
-    with open(os.path.join(log_dir, "history.json"), "w") as f:
-        json.dump(history_dict, f, indent=2)
     
     return history
 
@@ -732,7 +821,7 @@ def main():
         
         # 訓練模型
         logger.info("開始訓練...")
-        history = train_model(model, train_data, val_data, test_data, CONFIG)
+        history = train_model(model, train_data, val_data, CONFIG)
         
         # 評估模型
         evaluate_model(model, test_data, class_mapping, logger)
