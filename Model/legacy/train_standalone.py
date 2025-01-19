@@ -1,7 +1,7 @@
 """
-此代碼整合了WavFeatureFCNN模型的所有組件，目前使用的是FC layer
+此代碼整合了WavFeatureCNN模型的所有組件，目前使用的是FC layer
 包括配置、模型定義和訓練流程。
-python Model/experiments/WavFeatureFCNN/train_standalone.py
+python Model/experiments/WavFeatureCNN/train_standalone.py
 tensorboard --logdir=runs
 rm -rf runs/*
 """
@@ -35,9 +35,6 @@ import time
 from datetime import datetime
 import glob
 import re
-import seaborn as sns
-import matplotlib.pyplot as plt
-import pandas as pd
 
 # 從 class_config.py 導入必要的函數和配置
 from Model.base.class_config import (
@@ -48,10 +45,7 @@ from Model.base.class_config import (
     get_class_mapping,
     CLASS_CONFIG,
     get_active_classes,
-    get_num_classes,
-    subject_source,
-    SUBJECT_SOURCE_CONFIG,
-    SCORE_THRESHOLDS
+    get_num_classes
 )
 
 import tensorflow as tf
@@ -127,19 +121,6 @@ CONFIG = {
 os.makedirs(CONFIG['paths']['save_dir'], exist_ok=True)
 os.makedirs(CONFIG['paths']['model_dir'], exist_ok=True)
 os.makedirs(CONFIG['paths']['tensorboard_dir'], exist_ok=True)
-
-def get_run_dir() -> str:
-    """
-    獲取當前運行目錄，如果不存在則創建
-    
-    Returns:
-        str: 運行目錄的路徑
-    """
-    if not hasattr(get_run_dir, '_run_dir'):
-        timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-        get_run_dir._run_dir = os.path.join('runs', f'WavFeatureFCNN_{timestamp}')
-        os.makedirs(get_run_dir._run_dir, exist_ok=True)
-    return get_run_dir._run_dir
 
 def prepare_label_mapping():
     """準備標籤映射"""
@@ -281,101 +262,20 @@ def save_history(history, save_dir: str):
     with open(history_file, 'w') as f:
         json.dump(history_dict, f, indent=2)
 
-def categorize_subjects(patient_ids: List[str], scores: Dict[str, int]) -> Tuple[List[str], List[str]]:
-    """
-    將受試者分類為正常人和病人
-    
-    Args:
-        patient_ids: 所有受試者ID列表
-        scores: 受試者ID到評分的映射字典
-        
-    Returns:
-        Tuple[List[str], List[str]]: 正常人ID列表和病人ID列表
-    """
-    normal_subjects = []
-    patient_subjects = []
-    
-    for pid in patient_ids:
-        if pid in scores:
-            if is_normal(scores[pid]):
-                normal_subjects.append(pid)
-            elif is_patient(scores[pid]):
-                patient_subjects.append(pid)
-                
-    return normal_subjects, patient_subjects
-
-def save_distribution_info(log_dir: str, train_info: Dict, val_info: Dict, test_info: Dict):
-    """
-    保存數據分布信息到markdown文件
-    
-    Args:
-        log_dir: 日誌目錄
-        train_info: 訓練集信息
-        val_info: 驗證集信息
-        test_info: 測試集信息
-    """
-    # 確保目錄存在
-    os.makedirs(log_dir, exist_ok=True)
-    
-    md_path = os.path.join(log_dir, "DataDistribution.md")
-    
-    with open(md_path, 'w', encoding='utf-8') as f:
-        f.write("# 數據分布詳細信息\n\n")
-        
-        # 添加配置信息區段
-        f.write("## 配置信息\n\n")
-        
-        # 記錄評分閾值設定
-        f.write("### 評分閾值設定\n")
-        f.write(f"- 正常人閾值: <= {SCORE_THRESHOLDS['normal']}\n")
-        f.write(f"- 病人閾值: >= {SCORE_THRESHOLDS['patient']}\n\n")
-        
-        # 記錄來源設定
-        f.write("### 來源設定\n")
-        f.write("#### 正常人來源設定\n")
-        f.write(f"- N開頭: {'包含' if SUBJECT_SOURCE_CONFIG['normal']['include_N'] else '不包含'}\n")
-        f.write(f"- P開頭: {'包含' if SUBJECT_SOURCE_CONFIG['normal']['include_P'] else '不包含'}\n\n")
-        f.write("#### 病人來源設定\n")
-        f.write(f"- N開頭: {'包含' if SUBJECT_SOURCE_CONFIG['patient']['include_N'] else '不包含'}\n")
-        f.write(f"- P開頭: {'包含' if SUBJECT_SOURCE_CONFIG['patient']['include_P'] else '不包含'}\n\n")
-        
-        # 記錄類別配置
-        f.write("### 類別配置\n")
-        for class_name, is_active in CLASS_CONFIG.items():
-            status = "啟用" if is_active == 1 else "停用"
-            f.write(f"- {class_name}: {status}\n")
-        f.write("\n")
-        
-        # 數據集分布信息
-        for dataset_name, info in [
-            ("訓練集", train_info),
-            ("驗證集", val_info),
-            ("測試集", test_info)
-        ]:
-            f.write(f"## {dataset_name}\n\n")
-            f.write(f"### 樣本數: {info['sample_count']}\n\n")
-            
-            f.write("### 受試者分布\n")
-            f.write(f"- 正常人數量: {len(info['normal_subjects'])}\n")
-            f.write("  - ID列表: " + ", ".join(sorted(info['normal_subjects'])) + "\n")
-            f.write(f"- 病人數量: {len(info['patient_subjects'])}\n")
-            f.write("  - ID列表: " + ", ".join(sorted(info['patient_subjects'])) + "\n\n")
-            
-            f.write("### 每個受試者的樣本數\n")
-            for pid, count in sorted(info['subject_samples'].items()):
-                subject_type = "正常人" if pid in info['normal_subjects'] else "病人"
-                f.write(f"- {pid} ({subject_type}): {count}個樣本\n")
-            f.write("\n")
-            
-            f.write("### 類別分布\n")
-            for label, count in sorted(info['class_distribution'].items()):
-                f.write(f"- 類別 {label}: {count}個樣本\n")
-            f.write("\n")
-
-def prepare_data(features, labels, patient_ids, file_paths, test_size=0.2, val_size=0.2, logger=None, patient_scores=None):
+def prepare_data(features, labels, patient_ids, file_paths, test_size=0.2, val_size=0.2, logger=None):
     """
     準備訓練、驗證和測試數據集，確保同一個病人的資料只會出現在一個數據集中
+    
+    Args:
+        features: 特徵數據
+        labels: 標籤數據  
+        patient_ids: 病人ID列表
+        file_paths: 文件路徑列表
+        test_size: 測試集比例
+        val_size: 驗證集比例
+        logger: 日誌記錄器
     """
+    
     # 獲取唯一的病人ID和對應的索引
     unique_patients = np.unique(patient_ids)
     patient_to_indices = {patient: [] for patient in unique_patients}
@@ -384,18 +284,6 @@ def prepare_data(features, labels, patient_ids, file_paths, test_size=0.2, val_s
     for idx, patient in enumerate(patient_ids):
         patient_to_indices[patient].append(idx)
     
-    # 將受試者分類為正常人和病人
-    normal_subjects = []
-    patient_subjects = []
-    
-    for pid in unique_patients:
-        if pid in patient_scores:
-            is_normal_subject, is_patient_subject = subject_source(patient_scores[pid], pid)
-            if is_normal_subject:
-                normal_subjects.append(pid)
-            elif is_patient_subject:
-                patient_subjects.append(pid)
-    
     # 計算每個數據集需要的病人數量
     num_patients = len(unique_patients)
     num_test = max(1, int(num_patients * test_size))
@@ -403,31 +291,19 @@ def prepare_data(features, labels, patient_ids, file_paths, test_size=0.2, val_s
     num_train = num_patients - num_test - num_val
     
     if logger:
-        logger.info(f"\n總受試者數: {num_patients}")
-        logger.info(f"- 正常人: {len(normal_subjects)}人")
-        logger.info(f"- 病人: {len(patient_subjects)}人")
-        logger.info(f"\n數據集分配:")
-        logger.info(f"- 訓練集: {num_train}人")
-        logger.info(f"- 驗證集: {num_val}人")
-        logger.info(f"- 測試集: {num_test}人")
+        logger.info(f"\n總病人數: {num_patients}")
+        logger.info(f"訓練集病人數: {num_train}")
+        logger.info(f"驗證集病人數: {num_val}")
+        logger.info(f"測試集病人數: {num_test}")
     
-    # 分別打亂正常人和病人列表
-    random.shuffle(normal_subjects)
-    random.shuffle(patient_subjects)
+    # 隨機打亂病人ID
+    patient_list = list(unique_patients)
+    random.shuffle(patient_list)
     
-    # 按比例分配正常人和病人到各數據集
-    normal_train = normal_subjects[:int(len(normal_subjects) * 0.6)]
-    normal_val = normal_subjects[int(len(normal_subjects) * 0.6):int(len(normal_subjects) * 0.8)]
-    normal_test = normal_subjects[int(len(normal_subjects) * 0.8):]
-    
-    patient_train = patient_subjects[:int(len(patient_subjects) * 0.6)]
-    patient_val = patient_subjects[int(len(patient_subjects) * 0.6):int(len(patient_subjects) * 0.8)]
-    patient_test = patient_subjects[int(len(patient_subjects) * 0.8):]
-    
-    # 合併各數據集的受試者
-    train_patients = normal_train + patient_train
-    val_patients = normal_val + patient_val
-    test_patients = normal_test + patient_test
+    # 分配病人到不同數據集
+    train_patients = patient_list[:num_train]
+    val_patients = patient_list[num_train:num_train+num_val]
+    test_patients = patient_list[num_train+num_val:]
     
     # 收集每個數據集的索引
     train_indices = []
@@ -454,81 +330,59 @@ def prepare_data(features, labels, patient_ids, file_paths, test_size=0.2, val_s
     test_labels = labels[test_indices]
     test_paths = [file_paths[i] for i in test_indices]
     
-    # 準備數據分布信息
-    datasets_info = {
-        'train': {
-            'sample_count': len(train_features),
-            'normal_subjects': normal_train,
-            'patient_subjects': patient_train,
-            'subject_samples': {p: len([i for i in train_indices if patient_ids[i] == p]) 
-                              for p in train_patients},
-            'class_distribution': dict(Counter(train_labels))
-        },
-        'val': {
-            'sample_count': len(val_features),
-            'normal_subjects': normal_val,
-            'patient_subjects': patient_val,
-            'subject_samples': {p: len([i for i in val_indices if patient_ids[i] == p]) 
-                              for p in val_patients},
-            'class_distribution': dict(Counter(val_labels))
-        },
-        'test': {
-            'sample_count': len(test_features),
-            'normal_subjects': normal_test,
-            'patient_subjects': patient_test,
-            'subject_samples': {p: len([i for i in test_indices if patient_ids[i] == p]) 
-                              for p in test_patients},
-            'class_distribution': dict(Counter(test_labels))
-        }
-    }
-    
     if logger:
         logger.info("\n=== 數據分割詳細信息 ===")
-        for dataset_name, info in datasets_info.items():
-            logger.info(f"\n{dataset_name.capitalize()}集:")
-            logger.info(f"  - 樣本數: {info['sample_count']}")
-            logger.info(f"  - 正常人ID列表: {sorted(info['normal_subjects'])}")
-            logger.info(f"  - 病人ID列表: {sorted(info['patient_subjects'])}")
-            logger.info(f"  - 每個受試者的樣本數:")
-            for p in sorted(info['subject_samples'].keys()):
-                subject_type = "正常人" if p in info['normal_subjects'] else "病人"
-                logger.info(f"    * {p} ({subject_type}): {info['subject_samples'][p]}個樣本")
+        logger.info(f"訓練集:")
+        logger.info(f"  - 樣本數: {len(train_features)}")
+        logger.info(f"  - 病人ID列表: {sorted(train_patients)}")
+        logger.info(f"  - 每個病人的樣本數:")
+        for p in sorted(train_patients):
+            count = len([i for i in train_indices if patient_ids[i] == p])
+            logger.info(f"    * {p}: {count}個樣本")
             
-            logger.info(f"  - 類別分布:")
-            for label, count in sorted(info['class_distribution'].items()):
-                logger.info(f"    * 類別 {label}: {count}個樣本")
+        logger.info(f"\n驗證集:")
+        logger.info(f"  - 樣本數: {len(val_features)}")
+        logger.info(f"  - 病人ID列表: {sorted(val_patients)}")
+        logger.info(f"  - 每個病人的樣本數:")
+        for p in sorted(val_patients):
+            count = len([i for i in val_indices if patient_ids[i] == p])
+            logger.info(f"    * {p}: {count}個樣本")
+            
+        logger.info(f"\n測試集:")
+        logger.info(f"  - 樣本數: {len(test_features)}")
+        logger.info(f"  - 病人ID列表: {sorted(test_patients)}")
+        logger.info(f"  - 每個病人的樣本數:")
+        for p in sorted(test_patients):
+            count = len([i for i in test_indices if patient_ids[i] == p])
+            logger.info(f"    * {p}: {count}個樣本")
+        
+        # 打印每個數據集中各類別的分布
+        for dataset_name, dataset_labels in [
+            ("訓練集", train_labels),
+            ("驗證集", val_labels),
+            ("測試集", test_labels)
+        ]:
+            unique, counts = np.unique(dataset_labels, return_counts=True)
+            logger.info(f"\n{dataset_name}類別分布:")
+            for label, count in zip(unique, counts):
+                logger.info(f"類別 {label}: {count} 個樣本")
     
-    return (train_features, train_labels, train_paths), \
-           (val_features, val_labels, val_paths), \
-           (test_features, test_labels, test_paths), \
-           datasets_info
+    return (train_features, train_labels, train_paths), (val_features, val_labels, val_paths), (test_features, test_labels, test_paths)
 
 def load_data(config, logger):
-    """加載並準備數據"""
-    # 顯示受試者分類配置
-    logger.info("\n=== 受試者分類配置 ===")
-    logger.info("正常人定義:")
-    logger.info("- 評分閾值: <= 0")
-    logger.info("- 來源設定:")
-    logger.info(f"  * N開頭: {'包含' if SUBJECT_SOURCE_CONFIG['normal']['include_N'] else '不包含'}")
-    logger.info(f"  * P開頭: {'包含' if SUBJECT_SOURCE_CONFIG['normal']['include_P'] else '不包含'}")
-    logger.info("\n病人定義:")
-    logger.info("- 評分閾值: >= 10")
-    logger.info("- 來源設定:")
-    logger.info(f"  * N開頭: {'包含' if SUBJECT_SOURCE_CONFIG['patient']['include_N'] else '不包含'}")
-    logger.info(f"  * P開頭: {'包含' if SUBJECT_SOURCE_CONFIG['patient']['include_P'] else '不包含'}\n")
-
+    """
+    加載並準備數據
+    """
     # 獲取所有特徵文件
     feature_files = glob.glob(os.path.join(config['dataset']['data_dir'], "**", "WavTokenizer_tokens.npy"), recursive=True)
     logger.info(f"找到 {len(feature_files)} 個特徵文件")
     
-    # 初始化列表和字典
+    # 初始化列表
     features_list = []
     labels_list = []
     filenames_list = []
     patient_ids_list = []
-    file_paths_list = []
-    patient_scores = {}
+    file_paths_list = []  # 新增：用於追踪文件路徑
     
     # 獲取活躍類別的映射
     active_classes = {k: v for k, v in CLASS_CONFIG.items() if v == 1}
@@ -565,15 +419,13 @@ def load_data(config, logger):
             score = patient_info.get('score', -1)
             selection = patient_info.get('selection', '')
             
-            # 使用新的 subject_source 函數判斷類別
-            is_normal_subject, is_patient_subject = subject_source(score, patient_id)
-            
-            if is_normal_subject:
+            # 使用 class_config.py 的函數判斷類別
+            if is_normal(score):
                 subject_type = 'Normal'
-            elif is_patient_subject:
+            elif is_patient(score):
                 subject_type = 'Patient'
             else:
-                logger.warning(f"無法確定受試者類型，ID: {patient_id}, 評分: {score}")
+                logger.warning(f"無法確定受試者類型，評分: {score}")
                 continue
             
             # 獲取動作類型
@@ -619,9 +471,11 @@ def load_data(config, logger):
             target_dim = config['feature_processing']['target_dim']
             
             if feature_dim > target_dim:
+                # 如果特徵維度超過目標維度，從中間截取
                 start = (feature_dim - target_dim) // 2
                 features = features[:, :, start:start + target_dim]
             else:
+                # 如果特徵維度小於目標維度，用0填充
                 pad_width = ((0, 0), (0, 0), (0, target_dim - feature_dim))
                 features = np.pad(features, pad_width, mode='constant', constant_values=0)
             
@@ -631,17 +485,15 @@ def load_data(config, logger):
             filenames_list.extend([os.path.basename(dir_path)] * len(features))
             patient_ids_list.extend([patient_id] * len(features))
             
-            # 保存對應的音頻文件路徑
+            # 新增：保存對應的音頻文件路徑
             wav_file = os.path.join(dir_path, "Probe0_RX_IN_TDM4CH0.wav")
             if os.path.exists(wav_file):
+                # 使用相對路徑，從CombinedData開始
                 rel_path = os.path.relpath(wav_file, config['dataset']['data_dir'])
                 file_paths_list.extend([rel_path] * len(features))
             else:
                 logger.warning(f"找不到音頻文件: {wav_file}")
                 file_paths_list.extend([os.path.basename(dir_path)] * len(features))
-            
-            # 保存病人評分
-            patient_scores[patient_id] = score
             
         except Exception as e:
             logger.error(f"處理文件時出錯 {file_path}: {str(e)}")
@@ -653,7 +505,7 @@ def load_data(config, logger):
     # 合併所有特徵
     features = np.concatenate(features_list, axis=0)
     labels = np.array(labels_list)
-    file_paths = np.array(file_paths_list)
+    file_paths = np.array(file_paths_list)  # 新增：轉換為numpy數組
     
     # 特徵標準化
     features_reshaped = features.reshape(-1, features.shape[-1])
@@ -673,42 +525,41 @@ def load_data(config, logger):
         class_name = list(class_mapping.keys())[label]
         logger.info(f"- {class_name}: {count} 個樣本")
     
-    # 分割數據，傳入病人評分信息
-    train_data, val_data, test_data, datasets_info = prepare_data(
+    # 分割數據
+    train_data, val_data, test_data = prepare_data(
         features=features,
         labels=labels,
         patient_ids=patient_ids_list,
         file_paths=file_paths_list,
         test_size=config['dataset']['test_ratio'],
         val_size=config['dataset']['val_ratio'],
-        logger=logger,
-        patient_scores=patient_scores
+        logger=logger
     )
     
-    # 保存分布信息到文件
-    save_distribution_info(
-        log_dir=get_run_dir(),
-        train_info=datasets_info['train'],
-        val_info=datasets_info['val'],
-        test_info=datasets_info['test']
-    )
+    # 記錄分割信息
+    logger.info("\n=== 數據分割信息 ===")
+    logger.info(f"訓練集:\n  - 樣本數: {len(train_data[0])}\n  - 病人數: {len(set(patient_ids_list))}")
+    logger.info(f"驗證集:\n  - 樣本數: {len(val_data[0])}\n  - 病人數: {len(set(patient_ids_list))}")
+    logger.info(f"測試集:\n  - 樣本數: {len(test_data[0])}\n  - 病人數: {len(set(patient_ids_list))}")
     
-    return train_data, val_data, test_data, class_mapping, file_paths_list
+    # 顯示各集合的類別分布
+    for name, data in [("訓練集", train_data), ("驗證集", val_data), ("測試集", test_data)]:
+        logger.info(f"\n{name} 類別分布:")
+        counts = Counter(data[1])
+        for label, count in sorted(counts.items()):
+            class_name = list(class_mapping.keys())[label]
+            logger.info(f"  - {class_name}: {count}")
+    
+    return train_data, val_data, test_data, class_mapping, file_paths_list  # 新增：返回文件路徑列表
 
-def evaluate_model(model, test_data, class_mapping, logger, run_dir: str):
+def evaluate_model(model, test_data, class_mapping, logger):
     """
     評估模型在測試集上的表現
-    
-    Args:
-        model: 訓練好的模型
-        test_data: 測試數據集
-        class_mapping: 類別映射
-        logger: 日誌記錄器
-        run_dir: 運行目錄路徑
     """
     test_features, test_labels, test_paths = test_data
     predictions = model.predict(test_features)
     predicted_labels = np.argmax(predictions, axis=1)
+    # 如果 test_labels 已經是整數標籤，直接使用
     true_labels = test_labels if len(test_labels.shape) == 1 else np.argmax(test_labels, axis=1)
 
     # 計算準確率
@@ -728,42 +579,21 @@ def evaluate_model(model, test_data, class_mapping, logger, run_dir: str):
     for i in range(len(test_paths)):
         result = {
             "file_path": test_paths[i],
-            "true_label": int(true_labels[i]),
-            "predicted_label": int(predicted_labels[i]),
-            "correct": bool(true_labels[i] == predicted_labels[i])
+            "true_label": int(true_labels[i]),  # 轉換為 Python int
+            "predicted_label": int(predicted_labels[i]),  # 轉換為 Python int
+            "correct": bool(true_labels[i] == predicted_labels[i])  # 轉換為 Python bool
         }
         prediction_results.append(result)
 
     # 保存預測結果到 JSON 文件
-    prediction_results_path = os.path.join(run_dir, "prediction_results.json")
-    with open(prediction_results_path, "w", encoding="utf-8") as f:
+    os.makedirs("logs", exist_ok=True)
+    with open("logs/prediction_results.json", "w", encoding="utf-8") as f:
         json.dump(prediction_results, f, indent=4, ensure_ascii=False)
 
     # 保存混淆矩陣到 CSV 文件
     cm_df = pd.DataFrame(cm)
-    cm_csv_path = os.path.join(run_dir, "confusion_matrix.csv")
-    cm_df.to_csv(cm_csv_path)
-
-    # 獲取類別名稱列表
-    class_names = [k for k, v in sorted(class_mapping.items(), key=lambda x: x[1])]
-    
-    # 繪製並保存混淆矩陣熱圖
-    cm_plot_path = os.path.join(run_dir, "confusion_matrix.png")
-    plot_confusion_matrix(cm, class_names, cm_plot_path)
-
-    # 保存評估指標
-    metrics = {
-        "accuracy": float(accuracy),
-        "precision": {class_names[i]: float(p) for i, p in enumerate(precision)},
-        "recall": {class_names[i]: float(r) for i, r in enumerate(recall)},
-        "f1": {class_names[i]: float(f) for i, f in enumerate(f1)}
-    }
-    
-    metrics_path = os.path.join(run_dir, "evaluation_metrics.json")
-    with open(metrics_path, "w", encoding="utf-8") as f:
-        json.dump(metrics, f, indent=4, ensure_ascii=False)
-
-    logger.info(f"評估結果已保存到目錄: {run_dir}")
+    cm_df.to_csv("logs/confusion_matrix.csv")
+    logger.info("評估結果已保存到 logs 目錄")
 
 def compute_class_weights(labels):
     """計算類別權重"""
@@ -956,17 +786,20 @@ def train_model(model, train_data, val_data, config):
     # 設置較小的批次大小
     batch_size = 4
     
-    # 獲取運行目錄
-    run_dir = get_run_dir()
+    # 創建日誌目錄
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_dir = os.path.join("runs", "WavFeatureCNN_" + timestamp)
+    os.makedirs(log_dir, exist_ok=True)
     
     # 創建batch日誌目錄
-    batch_log_dir = os.path.join(run_dir, "batch_logs")
+    batch_log_dir = os.path.join(log_dir, "batch_logs")
     os.makedirs(batch_log_dir, exist_ok=True)
     
     # 保存訓練配置
-    config_path = os.path.join(run_dir, "training_config.json")
-    with open(config_path, 'w', encoding='utf-8') as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
+    config_path = os.path.join(log_dir, "train", "training_config.json")
+    os.makedirs(os.path.dirname(config_path), exist_ok=True)
+    with open(config_path, 'w') as f:
+        json.dump(config, f, indent=2)
     
     # 將元組數據轉換為tf.data.Dataset
     train_features, train_labels, train_paths = train_data
@@ -981,8 +814,8 @@ def train_model(model, train_data, val_data, config):
     
     # 設置回調函數
     callbacks = [
-        BatchLossCallback(run_dir),
-        BatchLogger(batch_log_dir, train_paths),
+        BatchLossCallback(log_dir),
+        BatchLogger(batch_log_dir, train_paths),  # 使用訓練數據的文件路徑
         AutoMonitor(patience=5, min_delta=0.001, check_interval=100),
         tf.keras.callbacks.EarlyStopping(
             monitor='val_loss',
@@ -996,7 +829,7 @@ def train_model(model, train_data, val_data, config):
             min_lr=config['training']['min_lr']
         ),
         tf.keras.callbacks.TensorBoard(
-            log_dir=run_dir,
+            log_dir=log_dir,
             histogram_freq=0,
             write_images=False,
             update_freq='batch'
@@ -1014,48 +847,6 @@ def train_model(model, train_data, val_data, config):
     
     return history
 
-def save_config_info(run_dir: str):
-    """
-    保存配置信息到運行目錄
-    
-    Args:
-        run_dir: 運行目錄路徑
-    """
-    config_info = {
-        "score_thresholds": SCORE_THRESHOLDS,
-        "subject_source_config": SUBJECT_SOURCE_CONFIG,
-        "class_config": CLASS_CONFIG,
-        "model_config": CONFIG
-    }
-    
-    config_path = os.path.join(run_dir, "config_info.json")
-    with open(config_path, 'w', encoding='utf-8') as f:
-        json.dump(config_info, f, indent=2, ensure_ascii=False)
-
-def plot_confusion_matrix(cm: np.ndarray, 
-                         class_names: List[str], 
-                         save_path: str,
-                         title: str = 'Confusion Matrix'):
-    """
-    繪製並保存混淆矩陣熱圖
-    
-    Args:
-        cm: 混淆矩陣數據
-        class_names: 類別名稱列表
-        save_path: 保存路徑
-        title: 圖表標題
-    """
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                xticklabels=class_names,
-                yticklabels=class_names)
-    plt.title(title)
-    plt.xlabel('預測類別')
-    plt.ylabel('實際類別')
-    plt.tight_layout()
-    plt.savefig(save_path)
-    plt.close()
-
 def main():
     """主函數"""
     # 設置日誌
@@ -1066,14 +857,6 @@ def main():
     logger = logging.getLogger(__name__)
     
     try:
-        # 獲取運行目錄
-        run_dir = get_run_dir()
-        logger.info(f"使用運行目錄: {run_dir}")
-        
-        # 保存配置信息
-        save_config_info(run_dir)
-        logger.info("配置信息已保存")
-        
         # 啟用GPU記憶體增長
         gpus = tf.config.list_physical_devices('GPU')
         if gpus:
@@ -1100,21 +883,8 @@ def main():
         logger.info("開始訓練...")
         history = train_model(model, train_data, val_data, CONFIG)
         
-        # 保存訓練歷史
-        history_path = os.path.join(run_dir, "training_history.json")
-        history_dict = {}
-        for key, value in history.history.items():
-            history_dict[key] = [float(v) for v in value]
-        with open(history_path, 'w', encoding='utf-8') as f:
-            json.dump(history_dict, f, indent=2, ensure_ascii=False)
-        
         # 評估模型
-        evaluate_model(model, test_data, class_mapping, logger, run_dir)
-        
-        # 保存模型
-        model_save_path = os.path.join(run_dir, "model.keras")
-        model.save(model_save_path)
-        logger.info(f"模型已保存到: {model_save_path}")
+        evaluate_model(model, test_data, class_mapping, logger)
         
     except Exception as e:
         logger.error(f"發生錯誤: {str(e)}")
