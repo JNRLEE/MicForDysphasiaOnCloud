@@ -45,7 +45,9 @@ from Model.base.class_config import (
     get_class_mapping,
     CLASS_CONFIG,
     get_active_classes,
-    get_num_classes
+    get_num_classes,
+    subject_source,
+    SUBJECT_SOURCE_CONFIG
 )
 
 import tensorflow as tf
@@ -331,18 +333,7 @@ def save_distribution_info(log_dir: str, train_info: Dict, val_info: Dict, test_
 def prepare_data(features, labels, patient_ids, file_paths, test_size=0.2, val_size=0.2, logger=None, patient_scores=None):
     """
     準備訓練、驗證和測試數據集，確保同一個病人的資料只會出現在一個數據集中
-    
-    Args:
-        features: 特徵數據
-        labels: 標籤數據  
-        patient_ids: 病人ID列表
-        file_paths: 文件路徑列表
-        test_size: 測試集比例
-        val_size: 驗證集比例
-        logger: 日誌記錄器
-        patient_scores: 病人ID到評分的映射字典
     """
-    
     # 獲取唯一的病人ID和對應的索引
     unique_patients = np.unique(patient_ids)
     patient_to_indices = {patient: [] for patient in unique_patients}
@@ -352,7 +343,16 @@ def prepare_data(features, labels, patient_ids, file_paths, test_size=0.2, val_s
         patient_to_indices[patient].append(idx)
     
     # 將受試者分類為正常人和病人
-    normal_subjects, patient_subjects = categorize_subjects(unique_patients, patient_scores)
+    normal_subjects = []
+    patient_subjects = []
+    
+    for pid in unique_patients:
+        if pid in patient_scores:
+            is_normal_subject, is_patient_subject = subject_source(patient_scores[pid], pid)
+            if is_normal_subject:
+                normal_subjects.append(pid)
+            elif is_patient_subject:
+                patient_subjects.append(pid)
     
     # 計算每個數據集需要的病人數量
     num_patients = len(unique_patients)
@@ -463,6 +463,19 @@ def prepare_data(features, labels, patient_ids, file_paths, test_size=0.2, val_s
 
 def load_data(config, logger):
     """加載並準備數據"""
+    # 顯示受試者分類配置
+    logger.info("\n=== 受試者分類配置 ===")
+    logger.info("正常人定義:")
+    logger.info("- 評分閾值: <= 0")
+    logger.info("- 來源設定:")
+    logger.info(f"  * N開頭: {'包含' if SUBJECT_SOURCE_CONFIG['normal']['include_N'] else '不包含'}")
+    logger.info(f"  * P開頭: {'包含' if SUBJECT_SOURCE_CONFIG['normal']['include_P'] else '不包含'}")
+    logger.info("\n病人定義:")
+    logger.info("- 評分閾值: >= 10")
+    logger.info("- 來源設定:")
+    logger.info(f"  * N開頭: {'包含' if SUBJECT_SOURCE_CONFIG['patient']['include_N'] else '不包含'}")
+    logger.info(f"  * P開頭: {'包含' if SUBJECT_SOURCE_CONFIG['patient']['include_P'] else '不包含'}\n")
+
     # 獲取所有特徵文件
     feature_files = glob.glob(os.path.join(config['dataset']['data_dir'], "**", "WavTokenizer_tokens.npy"), recursive=True)
     logger.info(f"找到 {len(feature_files)} 個特徵文件")
@@ -473,7 +486,7 @@ def load_data(config, logger):
     filenames_list = []
     patient_ids_list = []
     file_paths_list = []
-    patient_scores = {}  # 新增：存儲病人評分
+    patient_scores = {}
     
     # 獲取活躍類別的映射
     active_classes = {k: v for k, v in CLASS_CONFIG.items() if v == 1}
@@ -510,13 +523,15 @@ def load_data(config, logger):
             score = patient_info.get('score', -1)
             selection = patient_info.get('selection', '')
             
-            # 使用 class_config.py 的函數判斷類別
-            if is_normal(score):
+            # 使用新的 subject_source 函數判斷類別
+            is_normal_subject, is_patient_subject = subject_source(score, patient_id)
+            
+            if is_normal_subject:
                 subject_type = 'Normal'
-            elif is_patient(score):
+            elif is_patient_subject:
                 subject_type = 'Patient'
             else:
-                logger.warning(f"無法確定受試者類型，評分: {score}")
+                logger.warning(f"無法確定受試者類型，ID: {patient_id}, 評分: {score}")
                 continue
             
             # 獲取動作類型
@@ -562,11 +577,9 @@ def load_data(config, logger):
             target_dim = config['feature_processing']['target_dim']
             
             if feature_dim > target_dim:
-                # 如果特徵維度超過目標維度，從中間截取
                 start = (feature_dim - target_dim) // 2
                 features = features[:, :, start:start + target_dim]
             else:
-                # 如果特徵維度小於目標維度，用0填充
                 pad_width = ((0, 0), (0, 0), (0, target_dim - feature_dim))
                 features = np.pad(features, pad_width, mode='constant', constant_values=0)
             
@@ -576,10 +589,9 @@ def load_data(config, logger):
             filenames_list.extend([os.path.basename(dir_path)] * len(features))
             patient_ids_list.extend([patient_id] * len(features))
             
-            # 新增：保存對應的音頻文件路徑
+            # 保存對應的音頻文件路徑
             wav_file = os.path.join(dir_path, "Probe0_RX_IN_TDM4CH0.wav")
             if os.path.exists(wav_file):
-                # 使用相對路徑，從CombinedData開始
                 rel_path = os.path.relpath(wav_file, config['dataset']['data_dir'])
                 file_paths_list.extend([rel_path] * len(features))
             else:
@@ -599,7 +611,7 @@ def load_data(config, logger):
     # 合併所有特徵
     features = np.concatenate(features_list, axis=0)
     labels = np.array(labels_list)
-    file_paths = np.array(file_paths_list)  # 新增：轉換為numpy數組
+    file_paths = np.array(file_paths_list)
     
     # 特徵標準化
     features_reshaped = features.reshape(-1, features.shape[-1])
