@@ -1,7 +1,7 @@
 """
 此代碼整合了WavFeatureFCNN模型的所有組件，目前使用的是FC layer
 包括配置、模型定義和訓練流程。
-python Model/experiments/WavFeatureFCNN/train_standalone.py
+PYTHONPATH="/Users/jnrle/Library/CloudStorage/GoogleDrive-jenner.lee.com@gmail.com/My Drive/MicforDysphagia:$PYTHONPATH" python Model/WavFeatureFCNN/train_standalone.py
 tensorboard --logdir=runs
 rm -rf runs/*
 """
@@ -39,7 +39,6 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import pandas as pd
 
-# 從 class_config.py 導入必要的函數和配置
 from Model.base.class_config import (
     is_normal,
     is_patient,
