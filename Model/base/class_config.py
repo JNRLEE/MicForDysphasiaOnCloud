@@ -15,11 +15,7 @@ import json
 import os
 import tensorflow as tf
 
-# 評分閾值配置（可調整）
-SCORE_THRESHOLDS = {
-    'normal': 0,      # score <= 1 為正常人
-    'patient': 10      # score >= 3 為病人
-}
+
 
 # 實驗類型映射字典（不可修改）
 SELECTION_TYPES = {
@@ -30,31 +26,65 @@ SELECTION_TYPES = {
     'WaterDrinking': ["吞水10ml", "吞水20ml", "喝水", "吞水"]
 }
 
-# 類別配置
+# 評分閾值配置（可調整）
+SCORE_THRESHOLDS = {
+    'normal': 0,      # score <= 1 為正常人
+    'patient': 5      # score >= 3 為病人
+}
+
+# 類別配置(可調整)
 CLASS_CONFIG = {
     'Normal-NoMovement': 1,
-    'Normal-DrySwallow': 1,
-    'Normal-Cracker': 1,
-    'Normal-Jelly': 1,
+    'Normal-DrySwallow': 0,
+    'Normal-Cracker': 0,
+    'Normal-Jelly': 0,
     'Normal-WaterDrinking': 1,
-    'Patient-NoMovement': 1,
-    'Patient-DrySwallow': 1,
-    'Patient-Cracker': 1,
-    'Patient-Jelly': 1,
+    'Patient-NoMovement': 0,
+    'Patient-DrySwallow': 0,
+    'Patient-Cracker': 0,
+    'Patient-Jelly': 0,
     'Patient-WaterDrinking': 1
 }
 
-# 受試者來源配置
+# 受試者來源配置（可調整）
 SUBJECT_SOURCE_CONFIG = {
     'normal': {
         'include_N': 1,  # 是否包含 N 開頭的正常人
-        'include_P': 0   # 是否包含 P 開頭的正常人
+        'include_P': 1   # 是否包含 P 開頭的正常人
     },
     'patient': {
         'include_N': 0,  # 是否包含 N 開頭的病人
         'include_P': 1   # 是否包含 P 開頭的病人
     }
 }
+
+def subject_source(score: int, subject_id: str) -> Tuple[bool, bool]:
+    """
+    判斷受試者是否為正常人或病人，同時考慮評分和 ID 前綴
+    
+    Args:
+        score: 評分值
+        subject_id: 受試者 ID
+    
+    Returns:
+        Tuple[bool, bool]: (是否為正常人, 是否為病人)
+    """
+    is_n_prefix = subject_id.startswith('N')
+    is_p_prefix = subject_id.startswith('P')
+    
+    # 判斷是否為正常人 (使用 SCORE_THRESHOLDS['normal'])
+    is_normal_score = score <= SCORE_THRESHOLDS['normal']
+    is_normal_source = (is_n_prefix and SUBJECT_SOURCE_CONFIG['normal']['include_N']) or \
+                      (is_p_prefix and SUBJECT_SOURCE_CONFIG['normal']['include_P'])
+    
+    # 判斷是否為病人 (使用 SCORE_THRESHOLDS['patient'])
+    is_patient_score = score >= SCORE_THRESHOLDS['patient']
+    is_patient_source = (is_n_prefix and SUBJECT_SOURCE_CONFIG['patient']['include_N']) or \
+                       (is_p_prefix and SUBJECT_SOURCE_CONFIG['patient']['include_P'])
+    
+    return (is_normal_score and is_normal_source, is_patient_score and is_patient_source)
+
+
 
 def get_active_classes() -> List[str]:
     """獲取活動類別列表
@@ -185,32 +215,6 @@ def get_classification_mode() -> str:
     """
     active_classes = sum(1 for v in CLASS_CONFIG.values() if v == 1)
     return 'binary' if active_classes == 2 else 'multi'
-
-def subject_source(score: int, subject_id: str) -> Tuple[bool, bool]:
-    """
-    判斷受試者是否為正常人或病人，同時考慮評分和 ID 前綴
-    
-    Args:
-        score: 評分值
-        subject_id: 受試者 ID
-    
-    Returns:
-        Tuple[bool, bool]: (是否為正常人, 是否為病人)
-    """
-    is_n_prefix = subject_id.startswith('N')
-    is_p_prefix = subject_id.startswith('P')
-    
-    # 判斷是否為正常人
-    is_normal_score = score <= 0
-    is_normal_source = (is_n_prefix and SUBJECT_SOURCE_CONFIG['normal']['include_N']) or \
-                      (is_p_prefix and SUBJECT_SOURCE_CONFIG['normal']['include_P'])
-    
-    # 判斷是否為病人
-    is_patient_score = score >= 10
-    is_patient_source = (is_n_prefix and SUBJECT_SOURCE_CONFIG['patient']['include_N']) or \
-                       (is_p_prefix and SUBJECT_SOURCE_CONFIG['patient']['include_P'])
-    
-    return (is_normal_score and is_normal_source, is_patient_score and is_patient_source)
 
 def is_normal(score: int, subject_id: str = '') -> bool:
     """

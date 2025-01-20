@@ -78,7 +78,8 @@ CONFIG = {
             'NoMovement': 0,
             'DrySwallow': 1,
             'Cracker': 2,
-            'Jelly': 3
+            'Jelly': 3,
+            'WaterDrinking': 4
         },
         'val_ratio': 0.2,
         'test_ratio': 0.2,
