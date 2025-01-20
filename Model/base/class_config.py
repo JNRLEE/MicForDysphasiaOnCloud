@@ -36,10 +36,12 @@ CLASS_CONFIG = {
     'Normal-DrySwallow': 1,
     'Normal-Cracker': 1,
     'Normal-Jelly': 1,
+    'Normal-WaterDrinking': 1,
     'Patient-NoMovement': 1,
     'Patient-DrySwallow': 1,
     'Patient-Cracker': 1,
-    'Patient-Jelly': 1
+    'Patient-Jelly': 1,
+    'Patient-WaterDrinking': 1
 }
 
 # 受試者來源配置

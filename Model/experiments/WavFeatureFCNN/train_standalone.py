@@ -106,7 +106,7 @@ CONFIG = {
     },
     'training': {
         'batch_size': 8,  # 調整為較小的批次大小
-        'epochs': 50,     # 增加訓練輪數
+        'epochs': 100,     # 增加訓練輪數
         'learning_rate': 0.001,
         'min_lr': 1e-6,
         'patience': 10,   # 增加早停的耐心值
@@ -1050,8 +1050,8 @@ def plot_confusion_matrix(cm: np.ndarray,
                 xticklabels=class_names,
                 yticklabels=class_names)
     plt.title(title)
-    plt.xlabel('預測類別')
-    plt.ylabel('實際類別')
+    plt.xlabel('Predicted Class')
+    plt.ylabel('Actual Class')
     plt.tight_layout()
     plt.savefig(save_path)
     plt.close()
