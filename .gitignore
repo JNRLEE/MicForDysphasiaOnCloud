@@ -52,6 +52,7 @@ Model/embeddings/
 *.v2
 *.pt
 *_info
+WavTokenizer/*
 
 
 # Jupyter Notebook
