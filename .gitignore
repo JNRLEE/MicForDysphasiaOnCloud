@@ -58,7 +58,7 @@ Model/embeddings/
 .ipynb_checkpoints
 *.ipynb
 
-# 保留的文件（不忽略）
+# 保留的文件（不忽略)
 !requirements.txt
 !README.md
 !Model/experiments/*/config*.yaml
