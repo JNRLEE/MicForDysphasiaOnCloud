@@ -20,7 +20,21 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_dir, "..", ".."))
 sys.path.insert(0, project_root)
 
-from Model.base.class_config import get_action_type, SELECTION_TYPES
+# 直接在此定義實驗類型映射，不依賴 class_config.py
+SELECTION_TYPES = {
+    'NoMovement': ["無動作", "無吞嚥"],
+    'DrySwallow': ["乾吞嚥1口", "乾吞嚥2口", "乾吞嚥3口", "乾吞嚥"],
+    'Cracker': ["餅乾1塊", "餅乾2塊", "餅乾"],
+    'Jelly': ["吞果凍", "果凍"],
+    'WaterDrinking': ["吞水10ml", "吞水20ml", "喝水", "吞水"]
+}
+
+def get_selection_type(selection: str) -> str:
+    """將中文實驗類型映射到英文類別"""
+    for action_type, keywords in SELECTION_TYPES.items():
+        if any(keyword in selection for keyword in keywords):
+            return action_type
+    return selection  # 如果找不到對應，返回原始值
 
 def setup_logger() -> logging.Logger:
     """設置日誌記錄器"""
@@ -172,17 +186,13 @@ def process_features() -> pd.DataFrame:
             with open(patient_info_files[0], 'r', encoding='utf-8') as f:
                 patient_info = json.load(f)
             
-            # 提取信息
+            # 提取信息，不進行任何過濾
             patient_id = patient_info.get('patientID', '')
-            score = patient_info.get('score', 0)
+            score = patient_info.get('score', -1)  # 使用-1表示未記錄的評分
             selection = patient_info.get('selection', '')
-            selection_type = get_action_type(selection)
+            selection_type = get_selection_type(selection)
             
-            if selection_type is None:
-                logger.warning(f"未知的實驗類型: {selection}")
-                continue
-            
-            # 存儲特徵和元數據
+            # 存儲特徵和元數據，不進行任何過濾
             all_features.extend(processed_features)
             for _ in range(len(processed_features)):
                 feature_metadata.append({
