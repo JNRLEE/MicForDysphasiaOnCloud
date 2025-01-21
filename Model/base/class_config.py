@@ -29,12 +29,12 @@ SELECTION_TYPES = {
 # 評分閾值配置（可調整）
 SCORE_THRESHOLDS = {
     'normal': 0,      # score <= 1 為正常人
-    'patient': 5      # score >= 3 為病人
+    'patient': 10      # score >= 3 為病人
 }
 
 # 類別配置(可調整)
 CLASS_CONFIG = {
-    'Normal-NoMovement': 1,
+    'Normal-NoMovement': 0,
     'Normal-DrySwallow': 0,
     'Normal-Cracker': 0,
     'Normal-Jelly': 0,
@@ -50,7 +50,7 @@ CLASS_CONFIG = {
 SUBJECT_SOURCE_CONFIG = {
     'normal': {
         'include_N': 1,  # 是否包含 N 開頭的正常人
-        'include_P': 1   # 是否包含 P 開頭的正常人
+        'include_P': 0   # 是否包含 P 開頭的正常人
     },
     'patient': {
         'include_N': 0,  # 是否包含 N 開頭的病人

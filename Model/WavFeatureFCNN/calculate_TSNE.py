@@ -89,6 +89,7 @@ def calculate_tsne_variations(features: np.ndarray, logger: logging.Logger) -> D
 def process_features() -> pd.DataFrame:
     """
     處理特徵文件並計算t-SNE
+    維度統一為 (batch_size, 512, 2000)
     
     Returns:
         pd.DataFrame: 包含所有結果的數據框
@@ -98,8 +99,11 @@ def process_features() -> pd.DataFrame:
     all_features = []
     feature_metadata = []
     
-    # 設置數據目錄
+    # 設置數據目錄和目標維度
     data_dir = os.path.join(project_root, "WavData", "CombinedData")
+    TARGET_TIME_STEPS = 2000
+    TARGET_FEATURE_DIM = 512
+    
     if not os.path.exists(data_dir):
         logger.error(f"找不到數據目錄: {data_dir}")
         return pd.DataFrame()
@@ -108,31 +112,7 @@ def process_features() -> pd.DataFrame:
     feature_files = glob.glob(os.path.join(data_dir, "**", "WavTokenizer_tokens.npy"), recursive=True)
     logger.info(f"找到 {len(feature_files)} 個特徵文件")
     
-    # 第一次遍歷：確定最常見的特徵維度
-    feature_shapes = []
-    for feature_path in feature_files:
-        try:
-            data_dict = np.load(feature_path, allow_pickle=True).item()
-            features = data_dict['features']
-            if len(features.shape) == 3:
-                feature_shapes.append(features.shape[1:])
-        except Exception as e:
-            logger.warning(f"無法加載特徵文件 {feature_path}: {str(e)}")
-            continue
-    
-    if not feature_shapes:
-        logger.error("沒有找到有效的特徵文件")
-        return pd.DataFrame()
-    
-    # 找出最常見的維度
-    time_dims = [shape[0] for shape in feature_shapes]
-    feature_dims = [shape[1] for shape in feature_shapes]
-    target_time = max(set(time_dims), key=time_dims.count)
-    target_features = max(set(feature_dims), key=feature_dims.count)
-    
-    logger.info(f"目標維度: time={target_time}, features={target_features}")
-    
-    # 第二次遍歷：處理特徵
+    # 處理每個特徵文件
     for feature_path in tqdm(feature_files, desc="處理文件"):
         try:
             # 加載特徵
@@ -144,34 +124,32 @@ def process_features() -> pd.DataFrame:
                 logger.warning(f"特徵維度不正確: {feature_path}, shape={features.shape}")
                 continue
             
-            batch_size, time_steps, n_features = features.shape
+            batch_size, feature_dim, time_steps = features.shape
             
-            # 如果維度差異太大，跳過該文件
-            if abs(time_steps - target_time) > target_time * 0.5 or \
-               abs(n_features - target_features) > target_features * 0.5:
-                logger.warning(f"維度差異過大，跳過文件: {feature_path}")
-                continue
+            # 調整維度順序確保符合 (batch_size, 512, 2000)
+            if feature_dim != TARGET_FEATURE_DIM:
+                if feature_dim < TARGET_FEATURE_DIM:
+                    # 填充至目標特徵維度
+                    pad_width = ((0, 0), (0, TARGET_FEATURE_DIM - feature_dim), (0, 0))
+                    features = np.pad(features, pad_width, mode='constant')
+                else:
+                    # 截取至目標特徵維度
+                    features = features[:, :TARGET_FEATURE_DIM, :]
             
-            # 處理每個樣本
-            processed_features = []
-            for i in range(batch_size):
-                feat = features[i]
-                
-                # 調整時間維度
-                if time_steps < target_time:
-                    feat = np.pad(feat, ((0, target_time - time_steps), (0, 0)), mode='constant')
-                elif time_steps > target_time:
-                    feat = feat[:target_time, :]
-                
-                # 調整特徵維度
-                if n_features < target_features:
-                    feat = np.pad(feat, ((0, 0), (0, target_features - n_features)), mode='constant')
-                elif n_features > target_features:
-                    feat = feat[:, :target_features]
-                
-                processed_features.append(feat.flatten())
+            # 調整時間步長
+            if time_steps != TARGET_TIME_STEPS:
+                if time_steps < TARGET_TIME_STEPS:
+                    # 填充至目標時間步長
+                    pad_width = ((0, 0), (0, 0), (0, TARGET_TIME_STEPS - time_steps))
+                    features = np.pad(features, pad_width, mode='constant')
+                else:
+                    # 截取至目標時間步長
+                    features = features[:, :, :TARGET_TIME_STEPS]
             
-            # 獲取目錄信息
+            # 展平特徵，準備進行t-SNE
+            features_flat = features.reshape(batch_size, -1)
+            
+            # 獲取相關信息
             dir_path = os.path.dirname(feature_path)
             rel_path = os.path.relpath(feature_path, os.path.join(project_root, "WavData"))
             
@@ -186,15 +164,15 @@ def process_features() -> pd.DataFrame:
             with open(patient_info_files[0], 'r', encoding='utf-8') as f:
                 patient_info = json.load(f)
             
-            # 提取信息，不進行任何過濾
+            # 提取信息
             patient_id = patient_info.get('patientID', '')
-            score = patient_info.get('score', -1)  # 使用-1表示未記錄的評分
+            score = patient_info.get('score', -1)
             selection = patient_info.get('selection', '')
             selection_type = get_selection_type(selection)
             
-            # 存儲特徵和元數據，不進行任何過濾
-            all_features.extend(processed_features)
-            for _ in range(len(processed_features)):
+            # 存儲特徵和元數據
+            all_features.extend(features_flat)
+            for _ in range(batch_size):
                 feature_metadata.append({
                     'filepath': rel_path,
                     'patient_id': patient_id,
