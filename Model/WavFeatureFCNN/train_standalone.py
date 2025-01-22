@@ -29,7 +29,7 @@ sys.path.insert(0, project_root)
 
 import random
 from pathlib import Path
-from typing import Tuple, Dict, List, Optional, Set
+from typing import Tuple, Dict, List, Optional
 from collections import Counter
 import time
 from datetime import datetime
@@ -38,7 +38,6 @@ import re
 import seaborn as sns
 import matplotlib.pyplot as plt
 import pandas as pd
-from mpl_toolkits.mplot3d import Axes3D
 
 from Model.base.class_config import (
     is_normal,
@@ -1057,172 +1056,6 @@ def plot_confusion_matrix(cm: np.ndarray,
     plt.savefig(save_path)
     plt.close()
 
-def generate_color_mapping(train_ids: Set[str], val_ids: Set[str], test_ids: Set[str]) -> Dict[str, str]:
-    """
-    生成顏色映射字典
-    
-    Args:
-        train_ids: 訓練集病人ID集合
-        val_ids: 驗證集病人ID集合
-        test_ids: 測試集病人ID集合
-        
-    Returns:
-        Dict[str, str]: 顏色映射字典
-    """
-    # 基礎顏色系統 (10種不同色系)
-    base_colors = [
-        '#FF0000',  # 紅
-        '#00FF00',  # 綠
-        '#0000FF',  # 藍
-        '#FF00FF',  # 紫
-        '#FFFF00',  # 黃
-        '#00FFFF',  # 青
-        '#FFA500',  # 橙
-        '#800080',  # 深紫
-        '#008000',  # 深綠
-        '#800000'   # 深紅
-    ]
-    
-    color_map = {}
-    active_classes = [cls for cls, active in CLASS_CONFIG.items() if active == 1]
-    
-    # 為每個活動類別分配三種深淺度的顏色
-    for idx, class_name in enumerate(active_classes):
-        base_color = base_colors[idx % len(base_colors)]
-        # 轉換為RGB
-        r = int(base_color[1:3], 16)
-        g = int(base_color[3:5], 16)
-        b = int(base_color[5:7], 16)
-        
-        # 生成三種深淺度
-        for patient_id in train_ids:
-            color_map[f"{class_name}_{patient_id}_train"] = f"#{r:02x}{g:02x}{b:02x}"
-        for patient_id in val_ids:
-            darker_rgb = (int(r*0.7), int(g*0.7), int(b*0.7))
-            color_map[f"{class_name}_{patient_id}_val"] = f"#{darker_rgb[0]:02x}{darker_rgb[1]:02x}{darker_rgb[2]:02x}"
-        for patient_id in test_ids:
-            darkest_rgb = (int(r*0.4), int(g*0.4), int(b*0.4))
-            color_map[f"{class_name}_{patient_id}_test"] = f"#{darkest_rgb[0]:02x}{darkest_rgb[1]:02x}{darkest_rgb[2]:02x}"
-    
-    return color_map
-
-def plot_tsne_visualization(tsne_results: pd.DataFrame, 
-                          run_dir: str,
-                          train_ids: Set[str],
-                          val_ids: Set[str],
-                          test_ids: Set[str],
-                          perplexity: int,
-                          is_3d: bool = False):
-    """
-    繪製TSNE視覺化圖
-    
-    Args:
-        tsne_results: TSNE結果DataFrame
-        run_dir: 運行目錄
-        train_ids: 訓練集病人ID集合
-        val_ids: 驗證集病人ID集合
-        test_ids: 測試集病人ID集合
-        perplexity: TSNE的perplexity參數
-        is_3d: 是否為3D圖
-    """
-    color_map = generate_color_mapping(train_ids, val_ids, test_ids)
-    
-    plt.figure(figsize=(12, 8))
-    if is_3d:
-        ax = plt.axes(projection='3d')
-    else:
-        ax = plt.axes()
-    
-    # 獲取對應的座標列
-    if is_3d:
-        x_col = f'tsne_3d_p{perplexity}_x'
-        y_col = f'tsne_3d_p{perplexity}_y'
-        z_col = f'tsne_3d_p{perplexity}_z'
-    else:
-        x_col = f'tsne_2d_p{perplexity}_x'
-        y_col = f'tsne_2d_p{perplexity}_y'
-    
-    # 繪製每個點
-    for _, row in tsne_results.iterrows():
-        patient_id = row['patient_id']
-        selection = row['selection']
-        score = row['score']
-        
-        # 確定數據集類型
-        if patient_id in train_ids:
-            dataset_type = 'train'
-        elif patient_id in val_ids:
-            dataset_type = 'val'
-        elif patient_id in test_ids:
-            dataset_type = 'test'
-        else:
-            dataset_type = 'unknown'
-            
-        # 獲取類別
-        action_type = get_action_type(selection)
-        if action_type is None:
-            continue
-            
-        # 判斷是否為正常人或病人
-        if is_normal(score, patient_id):
-            subject_type = 'Normal'
-        elif is_patient(score, patient_id):
-            subject_type = 'Patient'
-        else:
-            # 不在SCORE_THRESHOLDS定義範圍內，使用灰色
-            color = '#808080'
-            marker = 'o'
-        
-        class_name = f"{subject_type}-{action_type}"
-        
-        # 確定顏色和標記
-        if class_name not in CLASS_CONFIG or CLASS_CONFIG[class_name] == 0:
-            # 未啟用的類別使用黑色
-            color = '#000000'
-            marker = 'x'
-        else:
-            # 使用顏色映射中的顏色
-            color = color_map.get(f"{class_name}_{patient_id}_{dataset_type}", '#808080')
-            marker = 'o'
-        
-        if is_3d:
-            ax.scatter(row[x_col], row[y_col], row[z_col], c=color, marker=marker)
-        else:
-            ax.scatter(row[x_col], row[y_col], c=color, marker=marker)
-    
-    # 設置標題和標籤
-    dimension = "3D" if is_3d else "2D"
-    plt.title(f'TSNE {dimension} Visualization (perplexity={perplexity})')
-    ax.set_xlabel('TSNE 1')
-    ax.set_ylabel('TSNE 2')
-    if is_3d:
-        ax.set_zlabel('TSNE 3')
-    
-    # 保存圖片
-    save_path = os.path.join(run_dir, f'tsne_{dimension.lower()}_p{perplexity}.png')
-    plt.savefig(save_path)
-    plt.close()
-
-def visualize_tsne_results(run_dir: str, train_ids: Set[str], val_ids: Set[str], test_ids: Set[str]):
-    """
-    視覺化TSNE結果
-    
-    Args:
-        run_dir: 運行目錄
-        train_ids: 訓練集病人ID集合
-        val_ids: 驗證集病人ID集合
-        test_ids: 測試集病人ID集合
-    """
-    # 讀取TSNE結果
-    tsne_results = pd.read_csv('Model/WavFeatureFCNN/results/tsne_results.csv')
-    
-    # 生成2D和3D圖
-    for perplexity in [5, 30, 50]:
-        # 2D TSNE
-        plot_tsne_visualization(tsne_results, run_dir, train_ids, val_ids, test_ids, perplexity, False)
-        # 3D TSNE
-        plot_tsne_visualization(tsne_results, run_dir, train_ids, val_ids, test_ids, perplexity, True)
-
 def main():
     """主函數"""
     # 設置日誌
@@ -1251,7 +1084,7 @@ def main():
         # 加載數據
         train_data, val_data, test_data, class_mapping, file_paths_list = load_data(CONFIG, logger)
         
-        # 創建模型
+        # 構建模型
         logger.info("構建模型...")
         model = WavFeatureCNN(CONFIG)
         
@@ -1277,12 +1110,6 @@ def main():
         
         # 評估模型
         evaluate_model(model, test_data, class_mapping, logger, run_dir)
-        
-        # 視覺化TSNE結果
-        train_ids = set(train_data[2])
-        val_ids = set(val_data[2])
-        test_ids = set(test_data[2])
-        visualize_tsne_results(run_dir, train_ids, val_ids, test_ids)
         
         # 保存模型
         model_save_path = os.path.join(run_dir, "model.keras")
