@@ -62,6 +62,7 @@ from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
+from visualize_tsne_custom import generate_tsne_plots
 
 # 配置參數
 CONFIG = {
@@ -360,7 +361,8 @@ def save_distribution_info(log_dir: str, train_info: Dict, val_info: Dict, test_
             f.write(f"- 正常人數量: {len(info['normal_subjects'])}\n")
             f.write("  - ID列表: " + ", ".join(sorted(info['normal_subjects'])) + "\n")
             f.write(f"- 病人數量: {len(info['patient_subjects'])}\n")
-            f.write("  - ID列表: " + ", ".join(sorted(info['patient_subjects'])) + "\n\n")
+            f.write("  - ID列表: " + ", ".join(sorted(info['patient_subjects'])))
+            f.write("\n\n")
             
             f.write("### 每個受試者的樣本數\n")
             for pid, count in sorted(info['subject_samples'].items()):
@@ -1278,11 +1280,10 @@ def main():
         # 評估模型
         evaluate_model(model, test_data, class_mapping, logger, run_dir)
         
-        # 視覺化TSNE結果
-        train_ids = set(train_data[2])
-        val_ids = set(val_data[2])
-        test_ids = set(test_data[2])
-        visualize_tsne_results(run_dir, train_ids, val_ids, test_ids)
+        # 生成TSNE可視化
+        logger.info("開始生成TSNE可視化...")
+        generate_tsne_plots()
+        logger.info("TSNE可視化生成完成")
         
         # 保存模型
         model_save_path = os.path.join(run_dir, "model.keras")

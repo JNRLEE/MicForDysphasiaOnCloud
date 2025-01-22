@@ -5,6 +5,7 @@
 2. 根據 selection 字段和配置將數據點分類為不同的動作類型
 3. 根據 CLASS_CONFIG 標記數據點為啟用或未啟用
 4. 生成 2D 和 3D 的 TSNE 圖，每種圖都包含三種不同的 perplexity 值
+cd Model/WavFeatureFCNN && python visualize_tsne_custom.py
 """
 
 import os
@@ -44,14 +45,27 @@ from Model.base.class_config import (
     is_patient
 )
 
-def setup_logger() -> logging.Logger:
+def setup_logger(run_dir: str = None) -> logging.Logger:
     """設置日誌記錄器"""
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
-    handler = logging.StreamHandler()
+    
+    # 清除現有的處理器
+    logger.handlers.clear()
+    
+    # 添加控制台處理器
+    console_handler = logging.StreamHandler()
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    
+    # 如果提供了運行目錄，添加文件處理器
+    if run_dir:
+        log_file = os.path.join(run_dir, 'tsne_visualization.log')
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+    
     return logger
 
 def load_dataset_info(run_dir: str) -> Dict[str, Set[str]]:
@@ -282,26 +296,31 @@ def plot_tsne(tsne_results: pd.DataFrame,
     plt.savefig(save_path, bbox_inches='tight', dpi=300)
     plt.close()
 
-def generate_tsne_plots(run_dir: str, logger: logging.Logger = None) -> None:
+def generate_tsne_plots(run_dir: str = None, tsne_results_path: str = None) -> None:
     """
-    生成TSNE視覺化圖並保存到指定的運行目錄
+    生成TSNE視覺化圖的主函數
     
     Args:
-        run_dir: 運行目錄路徑
-        logger: 日誌記錄器（可選）
+        run_dir: 運行目錄路徑，如果為None則使用最新的運行目錄
+        tsne_results_path: TSNE結果文件路徑，如果為None則使用默認路徑
     """
-    if logger is None:
-        logger = setup_logger()
+    # 如果沒有提供運行目錄，使用最新的
+    if run_dir is None:
+        run_dirs = sorted(glob.glob(os.path.join(project_root, 'runs', 'WavFeatureFCNN_*')))
+        if not run_dirs:
+            raise ValueError("找不到運行目錄")
+        run_dir = run_dirs[-1]
     
+    # 設置日誌記錄器
+    logger = setup_logger(run_dir)
     logger.info("開始生成TSNE視覺化圖")
     
     try:
+        # 如果沒有提供TSNE結果文件路徑，使用默認路徑
+        if tsne_results_path is None:
+            tsne_results_path = os.path.join(current_dir, 'results', 'tsne_results.csv')
+        
         # 讀取TSNE結果
-        tsne_results_path = os.path.join(os.path.dirname(__file__), 'results', 'tsne_results.csv')
-        if not os.path.exists(tsne_results_path):
-            logger.error(f"找不到TSNE結果文件: {tsne_results_path}")
-            return
-            
         tsne_results = pd.read_csv(tsne_results_path)
         
         # 讀取數據集信息
@@ -339,24 +358,5 @@ def generate_tsne_plots(run_dir: str, logger: logging.Logger = None) -> None:
         logger.error(f"生成TSNE圖時發生錯誤: {str(e)}")
         raise
 
-def main():
-    """主函數"""
-    logger = setup_logger()
-    
-    try:
-        # 獲取最新的運行目錄
-        run_dirs = sorted(glob.glob(os.path.join(project_root, 'runs', 'WavFeatureFCNN_*')))
-        if not run_dirs:
-            logger.error("找不到運行目錄")
-            return
-        latest_run_dir = run_dirs[-1]
-        
-        # 生成TSNE圖
-        generate_tsne_plots(latest_run_dir, logger)
-        
-    except Exception as e:
-        logger.error(f"主程序執行錯誤: {str(e)}")
-        raise
-
 if __name__ == "__main__":
-    main() 
+    generate_tsne_plots()
