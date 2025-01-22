@@ -5,8 +5,6 @@
 2. 根據 selection 字段和配置將數據點分類為不同的動作類型
 3. 根據 CLASS_CONFIG 標記數據點為啟用或未啟用
 4. 生成 2D 和 3D 的 TSNE 圖，每種圖都包含三種不同的 perplexity 值
-
-PYTHONPATH="/Users/jnrle/Library/CloudStorage/GoogleDrive-jenner.lee.com@gmail.com/My Drive/MicforDysphagia:$PYTHONPATH" python Model/WavFeatureFCNN/visualize_tsne_custom.py
 """
 
 import os
@@ -16,7 +14,7 @@ import glob
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from typing import Dict, List, Set, Tuple, Optional
+from typing import Dict, List, Set, Tuple
 import logging
 from collections import defaultdict
 import matplotlib.font_manager as fm
@@ -284,16 +282,13 @@ def plot_tsne(tsne_results: pd.DataFrame,
     plt.savefig(save_path, bbox_inches='tight', dpi=300)
     plt.close()
 
-def generate_tsne_plots(run_dir: str, logger: Optional[logging.Logger] = None) -> bool:
+def generate_tsne_plots(run_dir: str, logger: logging.Logger = None) -> None:
     """
-    生成TSNE視覺化圖的主要函數，可以被其他程式呼叫
+    生成TSNE視覺化圖並保存到指定的運行目錄
     
     Args:
         run_dir: 運行目錄路徑
-        logger: 可選的日誌記錄器，如果沒有提供則創建新的
-        
-    Returns:
-        bool: 是否成功生成圖片
+        logger: 日誌記錄器（可選）
     """
     if logger is None:
         logger = setup_logger()
@@ -302,18 +297,15 @@ def generate_tsne_plots(run_dir: str, logger: Optional[logging.Logger] = None) -
     
     try:
         # 讀取TSNE結果
-        tsne_results_path = os.path.join(current_dir, 'results', 'tsne_results.csv')
+        tsne_results_path = os.path.join(os.path.dirname(__file__), 'results', 'tsne_results.csv')
         if not os.path.exists(tsne_results_path):
             logger.error(f"找不到TSNE結果文件: {tsne_results_path}")
-            return False
+            return
             
         tsne_results = pd.read_csv(tsne_results_path)
         
         # 讀取數據集信息
         dataset_info = load_dataset_info(run_dir)
-        if not any(dataset_info.values()):
-            logger.error(f"無法從運行目錄讀取數據集信息: {run_dir}")
-            return False
         
         # 生成顏色映射
         color_map = generate_color_palette(len([v for v in CLASS_CONFIG.values() if v == 1]))
@@ -342,14 +334,13 @@ def generate_tsne_plots(run_dir: str, logger: Optional[logging.Logger] = None) -
                 )
         
         logger.info("所有TSNE圖已生成完成")
-        return True
         
     except Exception as e:
         logger.error(f"生成TSNE圖時發生錯誤: {str(e)}")
-        return False
+        raise
 
 def main():
-    """主函數，當腳本直接運行時使用"""
+    """主函數"""
     logger = setup_logger()
     
     try:
@@ -360,14 +351,12 @@ def main():
             return
         latest_run_dir = run_dirs[-1]
         
-        # 生成圖片
-        success = generate_tsne_plots(latest_run_dir, logger)
-        if not success:
-            sys.exit(1)
-            
+        # 生成TSNE圖
+        generate_tsne_plots(latest_run_dir, logger)
+        
     except Exception as e:
-        logger.error(f"主程序出錯: {str(e)}")
-        sys.exit(1)
+        logger.error(f"主程序執行錯誤: {str(e)}")
+        raise
 
 if __name__ == "__main__":
     main() 
